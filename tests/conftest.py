@@ -63,7 +63,11 @@ def app_engine(postgres_url, redis_url):
     from app.config import settings
     from app.db import Base
 
-    subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], check=True, env=os.environ.copy())
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        check=True,
+        env=os.environ.copy(),
+    )
     engine = create_engine(settings.database_url)
     yield engine
     if not USE_EXTERNAL:

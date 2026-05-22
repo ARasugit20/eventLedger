@@ -12,6 +12,8 @@ Clients send a stable `idempotency_key` with every event. EventLedger deduplicat
 
 Duplicate POSTs return **200** with the same `id` and body as the original **201**, so callers can safely retry on timeouts.
 
+**Payload conflict:** Reusing an idempotency key with a *different* `event_type` or `payload` returns **409 Conflict** — this catches client bugs and key collision abuse.
+
 ## 2. At-least-once delivery vs at-most-once side effects
 
 Redis Streams and HTTP retries mean messages may be delivered **more than once**. That is acceptable: workers check event status before processing and only apply side effects when transitioning from `received` → `processing`.

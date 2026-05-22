@@ -1,23 +1,38 @@
+import hashlib
 import json
 import logging
-from datetime import datetime, timezone
+import time
+from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.exceptions import IdempotencyConflictError
 from app.models import Event, EventStatus
 from app.schemas import EventCreate
-from app.services.idempotency import claim_idempotency_key, get_redis, release_idempotency_key
+from app.services.idempotency import claim_idempotency_key, get_redis
 
 logger = logging.getLogger(__name__)
 
 
-def _enqueue_event(event_id: UUID) -> None:
+def _matches_request(event: Event, body: EventCreate) -> bool:
+    return event.event_type == body.event_type and event.payload == body.payload
+
+
+def _enqueue_event(event_id: UUID, retries: int = 3) -> None:
     client = get_redis()
-    client.xadd(settings.event_stream, {"event_id": str(event_id)})
+    for attempt in range(retries):
+        try:
+            client.xadd(settings.event_stream, {"event_id": str(event_id)})
+            return
+        except Exception:
+            if attempt == retries - 1:
+                logger.exception("Failed to enqueue event %s after %s attempts", event_id, retries)
+                return
+            time.sleep(0.05 * (2**attempt))
 
 
 def get_event_by_id(db: Session, event_id: UUID) -> Event | None:
@@ -33,11 +48,15 @@ def create_event(db: Session, body: EventCreate) -> tuple[Event, bool]:
     """Returns (event, is_duplicate). Duplicate = same idempotency_key already stored."""
     existing = get_event_by_idempotency_key(db, body.idempotency_key)
     if existing:
+        if not _matches_request(existing, body):
+            raise IdempotencyConflictError(body.idempotency_key)
         return existing, True
 
     if not claim_idempotency_key(body.idempotency_key):
         existing = get_event_by_idempotency_key(db, body.idempotency_key)
         if existing:
+            if not _matches_request(existing, body):
+                raise IdempotencyConflictError(body.idempotency_key)
             return existing, True
         # Redis key held by in-flight request; DB unique constraint is source of truth
 
@@ -54,15 +73,13 @@ def create_event(db: Session, body: EventCreate) -> tuple[Event, bool]:
         db.rollback()
         existing = get_event_by_idempotency_key(db, body.idempotency_key)
         if existing:
+            if not _matches_request(existing, body):
+                raise IdempotencyConflictError(body.idempotency_key) from None
             return existing, True
         raise
     db.refresh(event)
 
-    try:
-        _enqueue_event(event.id)
-    except Exception:
-        logger.exception("Failed to enqueue event %s", event.id)
-
+    _enqueue_event(event.id)
     return event, False
 
 
@@ -85,17 +102,27 @@ def list_events(
     return items, total
 
 
-def mark_processing(db: Session, event: Event) -> Event:
-    event.status = EventStatus.processing
+def try_claim_for_processing(db: Session, event_id: UUID) -> Event | None:
+    """Atomically move received → processing; returns None if already claimed or terminal."""
+    stmt = (
+        update(Event)
+        .where(Event.id == event_id)
+        .where(Event.status == EventStatus.received)
+        .values(status=EventStatus.processing)
+        .returning(Event.id)
+    )
+    claimed_id = db.scalar(stmt)
+    if not claimed_id:
+        db.rollback()
+        return None
     db.commit()
-    db.refresh(event)
-    return event
+    return get_event_by_id(db, event_id)
 
 
 def mark_processed(db: Session, event: Event, result: dict) -> Event:
     event.status = EventStatus.processed
     event.result = result
-    event.processed_at = datetime.now(timezone.utc)
+    event.processed_at = datetime.now(UTC)
     event.error_message = None
     db.commit()
     db.refresh(event)
@@ -105,10 +132,15 @@ def mark_processed(db: Session, event: Event, result: dict) -> Event:
 def mark_failed(db: Session, event: Event, error_message: str) -> Event:
     event.status = EventStatus.failed
     event.error_message = error_message
-    event.processed_at = datetime.now(timezone.utc)
+    event.processed_at = datetime.now(UTC)
     db.commit()
     db.refresh(event)
     return event
+
+
+def stable_payload_hash(payload: dict) -> str:
+    encoded = json.dumps(payload, sort_keys=True).encode()
+    return hashlib.sha256(encoded).hexdigest()[:16]
 
 
 def simulate_processing(event: Event) -> dict:
@@ -120,5 +152,5 @@ def simulate_processing(event: Event) -> dict:
         "event_id": str(event.id),
         "event_type": event.event_type,
         "processed": True,
-        "payload_hash": hash(json.dumps(event.payload, sort_keys=True)),
+        "payload_hash": stable_payload_hash(event.payload),
     }

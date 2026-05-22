@@ -10,8 +10,8 @@ from app.services.events import (
     get_event_by_id,
     mark_failed,
     mark_processed,
-    mark_processing,
     simulate_processing,
+    try_claim_for_processing,
 )
 from app.services.idempotency import get_redis
 
@@ -22,7 +22,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-CONSUMER_NAME = f"worker-{socket.gethostname()}-{settings.consumer_group}"
+CONSUMER_NAME = f"worker-{socket.gethostname()}"
 
 
 def ensure_consumer_group() -> None:
@@ -35,18 +35,23 @@ def ensure_consumer_group() -> None:
             raise
 
 
-def process_message(event_id: str) -> None:
+def process_message(event_id: str) -> bool:
+    """Process one event. Returns True if work was performed."""
     db = SessionLocal()
     try:
         event = get_event_by_id(db, UUID(event_id))
         if not event:
             logger.warning("Event %s not found", event_id)
-            return
+            return False
         if event.status in (EventStatus.processed, EventStatus.failed):
             logger.info("Event %s already terminal (%s)", event_id, event.status.value)
-            return
+            return False
 
-        mark_processing(db, event)
+        event = try_claim_for_processing(db, UUID(event_id))
+        if not event:
+            logger.info("Event %s already claimed or not in received state", event_id)
+            return False
+
         try:
             result = simulate_processing(event)
             mark_processed(db, event, result)
@@ -54,6 +59,7 @@ def process_message(event_id: str) -> None:
         except Exception as exc:
             mark_failed(db, event, str(exc))
             logger.error('{"event_id":"%s","status":"failed","error":"%s"}', event_id, exc)
+        return True
     finally:
         db.close()
 

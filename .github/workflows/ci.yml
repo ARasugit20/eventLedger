@@ -21,5 +21,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Lint
+        run: ruff check app tests
+
       - name: Run tests
-        run: pytest -v
+        run: pytest -v --tb=short

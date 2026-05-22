@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
+from app.exceptions import IdempotencyConflictError
 from app.models import EventStatus
 from app.schemas import EventCreate, EventListResponse, EventResponse, HealthResponse
 from app.services.events import create_event, get_event_by_id, list_events
@@ -48,6 +49,14 @@ async def log_requests(request: Request, call_next):
         latency_ms,
     )
     return response
+
+
+@app.exception_handler(IdempotencyConflictError)
+async def idempotency_conflict_handler(request: Request, exc: IdempotencyConflictError):
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": str(exc)},
+    )
 
 
 @app.exception_handler(Exception)
