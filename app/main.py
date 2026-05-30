@@ -1,6 +1,6 @@
 """FastAPI HTTP API — routes, middleware, and error handlers.
 
-What: Exposes POST/GET /events and /health.
+What: Exposes POST/GET /events, /health, and /metrics.
 Why: Thin layer that validates JSON, calls services, and returns HTTP status codes.
 Key routes: ingest_event (201 new / 200 duplicate), get_event, list_all_events, health.
 """
@@ -12,14 +12,16 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
+from prometheus_client import make_asgi_app
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.exceptions import IdempotencyConflictError
+from app.metrics import events_ingested_total
 from app.models import EventStatus
 from app.schemas import EventCreate, EventListResponse, EventResponse, HealthResponse
-from app.services.events import create_event, get_event_by_id, list_events
+from app.services.events import create_event, get_event_by_id, list_events, refresh_pending_gauge
 from app.services.idempotency import get_redis
 
 logging.basicConfig(
@@ -41,6 +43,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Prometheus scrapes this path; separate from business routes.
+app.mount("/metrics", make_asgi_app())
 
 
 @app.middleware("http")
@@ -79,14 +84,13 @@ async def global_exception_handler(request: Request, exc: Exception):
 def health() -> HealthResponse:
     from sqlalchemy import text
 
-    from app.db import SessionLocal
-
     db_status = "ok"
     redis_status = "ok"
 
     try:
         db = SessionLocal()
         db.execute(text("SELECT 1"))
+        refresh_pending_gauge(db)
         db.close()
     except Exception:
         db_status = "error"
@@ -105,6 +109,10 @@ def ingest_event(body: EventCreate, response: Response, db: Session = Depends(ge
     start = time.perf_counter()
     event, is_duplicate = create_event(db, body)
     latency_ms = round((time.perf_counter() - start) * 1000, 2)
+
+    # Track new vs duplicate ingests for dashboards and alerting.
+    events_ingested_total.labels(result="duplicate" if is_duplicate else "new").inc()
+
     logger.info(
         '{"event_id":"%s","idempotency_key":"%s","duplicate":%s,"latency_ms":%s}',
         event.id,
