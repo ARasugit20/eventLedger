@@ -1,3 +1,10 @@
+"""SQLAlchemy ORM models — the shape of data stored in PostgreSQL.
+
+What: `Event` table and `EventStatus` lifecycle enum.
+Why: Durable record of every ingested event and its processing state.
+Key types: EventStatus (received → processing → processed | failed), Event row.
+"""
+
 import enum
 import uuid
 from datetime import datetime

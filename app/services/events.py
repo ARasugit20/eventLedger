@@ -1,3 +1,10 @@
+"""Business logic for creating, listing, and updating events.
+
+What: Core ingest flow, idempotency checks, enqueue to Redis, worker state updates.
+Why: Route handlers stay thin; all DB/Redis orchestration lives here.
+Key function: create_event() — dedupe, insert, enqueue; returns (event, is_duplicate).
+"""
+
 import hashlib
 import json
 import logging

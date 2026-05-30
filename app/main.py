@@ -1,3 +1,10 @@
+"""FastAPI HTTP API — routes, middleware, and error handlers.
+
+What: Exposes POST/GET /events and /health.
+Why: Thin layer that validates JSON, calls services, and returns HTTP status codes.
+Key routes: ingest_event (201 new / 200 duplicate), get_event, list_all_events, health.
+"""
+
 import logging
 import time
 from contextlib import asynccontextmanager

@@ -1,3 +1,10 @@
+"""Pydantic schemas for API request/response bodies.
+
+What: Validated JSON shapes for POST /events and GET responses.
+Why: FastAPI uses these to validate input and document OpenAPI automatically.
+Key types: EventCreate (ingest body), EventResponse (single event), HealthResponse.
+"""
+
 from datetime import datetime
 from uuid import UUID
 

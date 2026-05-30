@@ -1,3 +1,10 @@
+"""Database connection and session management.
+
+What: SQLAlchemy engine, session factory, and FastAPI `get_db` dependency.
+Why: Every API request gets its own DB session that is closed after the response.
+Key exports: `engine`, `SessionLocal`, `get_db`, `Base` (for Alembic/models).
+"""
+
 from collections.abc import Generator
 
 from sqlalchemy import create_engine

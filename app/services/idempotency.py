@@ -1,3 +1,10 @@
+"""Redis-backed fast path for idempotency deduplication.
+
+What: SET NX on idempotency keys before hitting PostgreSQL.
+Why: Rejects obvious duplicates in ~1ms instead of a full DB round-trip.
+Key function: claim_idempotency_key() — returns False if key was seen recently.
+"""
+
 import redis
 
 from app.config import settings

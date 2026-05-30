@@ -1,3 +1,10 @@
+"""Background worker — consumes Redis Stream and processes events.
+
+What: Reads event IDs from a Redis Stream, runs handlers, updates Postgres status.
+Why: Ingest API returns fast; heavy/slow work happens here asynchronously.
+Key function: process_message() — claim event, simulate handler, mark processed|failed.
+"""
+
 import logging
 import socket
 import time

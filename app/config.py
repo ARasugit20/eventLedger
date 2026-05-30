@@ -1,3 +1,10 @@
+"""Application settings loaded from environment variables.
+
+What: Central config (database URL, Redis URL, stream names, TTLs).
+Why: Keeps secrets and hostnames out of code; one place to read env vars.
+Key export: `settings` singleton used by db, redis, worker, and API.
+"""
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
