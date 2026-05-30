@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.exceptions import IdempotencyConflictError
+from app.metrics import events_pending_processing
 from app.models import Event, EventStatus
 from app.schemas import EventCreate
 from app.services.idempotency import claim_idempotency_key, get_redis
@@ -40,6 +41,24 @@ def _enqueue_event(event_id: UUID, retries: int = 3) -> None:
                 logger.exception("Failed to enqueue event %s after %s attempts", event_id, retries)
                 return
             time.sleep(0.05 * (2**attempt))
+
+
+def refresh_pending_gauge(db: Session) -> None:
+    """Update Prometheus gauge with how many events are not yet terminal."""
+    count = (
+        db.scalar(
+            select(func.count())
+            .select_from(Event)
+            .where(Event.status.in_([EventStatus.received, EventStatus.processing]))
+        )
+        or 0
+    )
+    events_pending_processing.set(count)
+
+
+def count_events(db: Session) -> int:
+    """Return total rows in events table (used by concurrency tests)."""
+    return db.scalar(select(func.count()).select_from(Event)) or 0
 
 
 def get_event_by_id(db: Session, event_id: UUID) -> Event | None:
@@ -65,7 +84,7 @@ def create_event(db: Session, body: EventCreate) -> tuple[Event, bool]:
             if not _matches_request(existing, body):
                 raise IdempotencyConflictError(body.idempotency_key)
             return existing, True
-        # Redis key held by in-flight request; DB unique constraint is source of truth
+        # Another request holds the Redis key; Postgres UNIQUE constraint decides the winner.
 
     event = Event(
         idempotency_key=body.idempotency_key,
@@ -87,6 +106,7 @@ def create_event(db: Session, body: EventCreate) -> tuple[Event, bool]:
     db.refresh(event)
 
     _enqueue_event(event.id)
+    refresh_pending_gauge(db)
     return event, False
 
 
@@ -123,6 +143,7 @@ def try_claim_for_processing(db: Session, event_id: UUID) -> Event | None:
         db.rollback()
         return None
     db.commit()
+    refresh_pending_gauge(db)
     return get_event_by_id(db, event_id)
 
 
@@ -133,6 +154,7 @@ def mark_processed(db: Session, event: Event, result: dict) -> Event:
     event.error_message = None
     db.commit()
     db.refresh(event)
+    refresh_pending_gauge(db)
     return event
 
 
@@ -142,6 +164,7 @@ def mark_failed(db: Session, event: Event, error_message: str) -> Event:
     event.processed_at = datetime.now(UTC)
     db.commit()
     db.refresh(event)
+    refresh_pending_gauge(db)
     return event
 
 

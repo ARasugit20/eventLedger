@@ -12,11 +12,13 @@ from uuid import UUID
 
 from app.config import settings
 from app.db import SessionLocal
+from app.metrics import event_processing_duration_seconds
 from app.models import EventStatus
 from app.services.events import (
     get_event_by_id,
     mark_failed,
     mark_processed,
+    refresh_pending_gauge,
     simulate_processing,
     try_claim_for_processing,
 )
@@ -46,6 +48,8 @@ def process_message(event_id: str) -> bool:
     """Process one event. Returns True if work was performed."""
     db = SessionLocal()
     try:
+        refresh_pending_gauge(db)
+
         event = get_event_by_id(db, UUID(event_id))
         if not event:
             logger.warning("Event %s not found", event_id)
@@ -59,13 +63,15 @@ def process_message(event_id: str) -> bool:
             logger.info("Event %s already claimed or not in received state", event_id)
             return False
 
-        try:
-            result = simulate_processing(event)
-            mark_processed(db, event, result)
-            logger.info('{"event_id":"%s","status":"processed"}', event_id)
-        except Exception as exc:
-            mark_failed(db, event, str(exc))
-            logger.error('{"event_id":"%s","status":"failed","error":"%s"}', event_id, exc)
+        # Histogram lets Grafana show p50/p99 worker latency under load.
+        with event_processing_duration_seconds.time():
+            try:
+                result = simulate_processing(event)
+                mark_processed(db, event, result)
+                logger.info('{"event_id":"%s","status":"processed"}', event_id)
+            except Exception as exc:
+                mark_failed(db, event, str(exc))
+                logger.error('{"event_id":"%s","status":"failed","error":"%s"}', event_id, exc)
         return True
     finally:
         db.close()
