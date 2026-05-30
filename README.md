@@ -102,6 +102,9 @@ docker compose up --build
 |---------|-----|
 | API | http://localhost:8000 |
 | OpenAPI | http://localhost:8000/docs |
+| **Metrics** | http://localhost:8000/metrics |
+| **Prometheus** | http://localhost:9090 |
+| **Grafana** | http://localhost:3000 (admin/admin) |
 | PostgreSQL | `localhost:5432` |
 | Redis | `localhost:6379` |
 
@@ -207,18 +210,37 @@ eventLedger/
 │   ├── models.py            # Event ORM model
 │   ├── schemas.py           # Pydantic request/response models
 │   ├── exceptions.py        # IdempotencyConflictError
+│   ├── metrics.py           # Prometheus counters, histograms, gauges
 │   ├── worker.py            # Redis Streams consumer
 │   └── services/
 │       ├── events.py        # Ingest, list, worker helpers
 │       └── idempotency.py   # Redis SET NX
 ├── alembic/                 # Database migrations
-├── tests/                   # pytest suite (14 tests)
+├── tests/                   # pytest suite (16 tests)
 ├── docs/
 │   ├── INTERVIEW.md         # System design talking points
 │   └── LOAD_TEST.md         # Load test commands + bottlenecks
 ├── docker-compose.yml
 ├── Dockerfile
 └── .github/workflows/ci.yml
+```
+
+## Observability (Prometheus)
+
+EventLedger exposes Prometheus metrics at **`GET /metrics`**:
+
+| Metric | Type | Meaning |
+|--------|------|---------|
+| `events_ingested_total{result="new\|duplicate"}` | Counter | Ingest volume split by new vs retry |
+| `event_processing_duration_seconds` | Histogram | Worker handler latency |
+| `events_pending_processing` | Gauge | Events in `received` or `processing` |
+
+With `docker compose up`, Prometheus scrapes the API and Grafana loads a pre-built dashboard.
+
+```bash
+# After a few curl POSTs to /events:
+open http://localhost:9090   # Prometheus
+open http://localhost:3000   # Grafana → EventLedger Overview
 ```
 
 ## Tests & CI
@@ -245,6 +267,8 @@ USE_EXTERNAL_SERVICES=1 pytest -v
 | Test file | What it proves |
 |-----------|----------------|
 | `test_idempotency.py` | Duplicate → 200 same id; concurrent races; 409 on payload conflict |
+| `test_concurrency.py` | 50 parallel POSTs, same key → exactly 1 row in DB |
+| `test_metrics.py` | `/metrics` exposes ingest counter after POST |
 | `test_integration.py` | Stream enqueue; worker pipeline; failed events; double-process guard |
 | `test_health.py` | DB + Redis connectivity |
 | `test_events_service.py` | Stable SHA-256 payload fingerprint |
