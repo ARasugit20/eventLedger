@@ -20,6 +20,7 @@ from app.db import SessionLocal, get_db
 from app.exceptions import IdempotencyConflictError
 from app.metrics import events_ingested_total
 from app.models import EventStatus
+from app.routers import analytics
 from app.schemas import EventCreate, EventListResponse, EventResponse, HealthResponse
 from app.services.events import create_event, get_event_by_id, list_events, refresh_pending_gauge
 from app.services.idempotency import get_redis
@@ -34,6 +35,10 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from analytics.apply import apply_analytics_views
+    from app.db import engine
+
+    apply_analytics_views(engine)
     yield
 
 
@@ -46,6 +51,7 @@ app = FastAPI(
 
 # Prometheus scrapes this path; separate from business routes.
 app.mount("/metrics", make_asgi_app())
+app.include_router(analytics.router)
 
 
 @app.middleware("http")

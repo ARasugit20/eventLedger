@@ -69,6 +69,9 @@ def app_engine(postgres_url, redis_url):
         env=os.environ.copy(),
     )
     engine = create_engine(settings.database_url)
+    from analytics.apply import apply_analytics_views
+
+    apply_analytics_views(engine)
     yield engine
     if not USE_EXTERNAL:
         Base.metadata.drop_all(bind=engine)
@@ -80,6 +83,7 @@ def clean_state(app_engine, redis_url):
 
     _reload_app_modules()
     with app_engine.connect() as conn:
+        conn.execute(text("TRUNCATE TABLE ingest_attempts RESTART IDENTITY CASCADE"))
         conn.execute(text("TRUNCATE TABLE events RESTART IDENTITY CASCADE"))
         conn.commit()
     get_redis().flushdb()

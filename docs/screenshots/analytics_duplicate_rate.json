@@ -1,0 +1,18 @@
+[
+  {
+    "event_type": "order.created",
+    "total_attempts": 25,
+    "duplicate_attempts": 8,
+    "new_attempts": 17,
+    "unique_idempotency_keys": 17,
+    "duplicate_rate_pct": 32.0
+  },
+  {
+    "event_type": "claim.submitted",
+    "total_attempts": 10,
+    "duplicate_attempts": 2,
+    "new_attempts": 8,
+    "unique_idempotency_keys": 8,
+    "duplicate_rate_pct": 20.0
+  }
+]

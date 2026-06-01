@@ -1,0 +1,9 @@
+{
+  "total_events_all_time": 35,
+  "events_last_24h": 35,
+  "total_processed": 28,
+  "total_failed": 2,
+  "currently_pending": 5,
+  "overall_success_rate_pct": 80.0,
+  "p95_latency_seconds": 0.142
+}

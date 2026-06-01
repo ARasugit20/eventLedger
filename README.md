@@ -70,6 +70,39 @@ flowchart LR
 **Ingest path:** validate → Redis claim → INSERT event (`received`) → XADD stream → respond  
 **Worker path:** XREADGROUP → atomic claim (`processing`) → simulate handler → `processed` | `failed`
 
+## Analytics layer
+
+SQL views over the event store answer **business questions** (not just infra metrics):
+
+| View / endpoint | Business question |
+|-----------------|-------------------|
+| `analytics_daily_ingest` / `GET /analytics/daily-volume` | How many events per day? Failure rate? |
+| `analytics_duplicate_rate` / `GET /analytics/duplicate-rate` | Which event types get the most retries? |
+| `analytics_processing_latency` / `GET /analytics/latency` | p50/p95/p99 processing time by type? |
+| `analytics_event_type_summary` | Event mix over last 7 days |
+| `analytics_system_health` / `GET /analytics/health` | Single-row KPI snapshot |
+
+Duplicate retries are logged in `ingest_attempts` (append-only); the `events` table keeps one row per `idempotency_key`.
+
+**Example SQL:**
+
+```sql
+SELECT event_type, duplicate_rate_pct, total_attempts
+FROM analytics_duplicate_rate
+ORDER BY duplicate_rate_pct DESC;
+```
+
+**Example API:**
+
+```bash
+curl http://localhost:8000/analytics/health | jq
+curl http://localhost:8000/analytics/duplicate-rate | jq
+```
+
+Sample outputs: [docs/screenshots/](docs/screenshots/)
+
+> Design note: Same pattern as **dbt mart models** — SQL-defined, business-readable, separated from the raw event store.
+
 ## Tech stack
 
 | Layer | Choice | Why |
@@ -211,12 +244,15 @@ eventLedger/
 │   ├── schemas.py           # Pydantic request/response models
 │   ├── exceptions.py        # IdempotencyConflictError
 │   ├── metrics.py           # Prometheus counters, histograms, gauges
+│   ├── routers/analytics.py # GET /analytics/* over SQL views
 │   ├── worker.py            # Redis Streams consumer
 │   └── services/
 │       ├── events.py        # Ingest, list, worker helpers
 │       └── idempotency.py   # Redis SET NX
+├── analytics/               # SQL views + apply script
+│   └── views.sql
 ├── alembic/                 # Database migrations
-├── tests/                   # pytest suite (16 tests)
+├── tests/                   # pytest suite (19 tests)
 ├── docs/
 │   ├── INTERVIEW.md         # System design talking points
 │   └── LOAD_TEST.md         # Load test commands + bottlenecks
@@ -267,6 +303,7 @@ USE_EXTERNAL_SERVICES=1 pytest -v
 | Test file | What it proves |
 |-----------|----------------|
 | `test_idempotency.py` | Duplicate → 200 same id; concurrent races; 409 on payload conflict |
+| `test_analytics.py` | `/analytics/*` endpoints return KPIs after ingest |
 | `test_concurrency.py` | 50 parallel POSTs, same key → exactly 1 row in DB |
 | `test_metrics.py` | `/metrics` exposes ingest counter after POST |
 | `test_integration.py` | Stream enqueue; worker pipeline; failed events; double-process guard |

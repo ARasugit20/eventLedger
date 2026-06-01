@@ -12,7 +12,7 @@ import time
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -70,12 +70,45 @@ def get_event_by_idempotency_key(db: Session, key: str) -> Event | None:
     return db.scalar(stmt)
 
 
+def _log_ingest_attempt(
+    db: Session,
+    *,
+    idempotency_key: str,
+    event_type: str,
+    was_duplicate: bool,
+    http_status: int,
+) -> None:
+    """Append-only row for analytics_duplicate_rate (duplicates are not stored in events)."""
+    db.execute(
+        text(
+            """
+            INSERT INTO ingest_attempts (idempotency_key, event_type, was_duplicate, http_status)
+            VALUES (:key, :etype, :dup, :status)
+            """
+        ),
+        {
+            "key": idempotency_key,
+            "etype": event_type,
+            "dup": was_duplicate,
+            "status": http_status,
+        },
+    )
+    db.commit()
+
+
 def create_event(db: Session, body: EventCreate) -> tuple[Event, bool]:
     """Returns (event, is_duplicate). Duplicate = same idempotency_key already stored."""
     existing = get_event_by_idempotency_key(db, body.idempotency_key)
     if existing:
         if not _matches_request(existing, body):
             raise IdempotencyConflictError(body.idempotency_key)
+        _log_ingest_attempt(
+            db,
+            idempotency_key=body.idempotency_key,
+            event_type=body.event_type,
+            was_duplicate=True,
+            http_status=200,
+        )
         return existing, True
 
     if not claim_idempotency_key(body.idempotency_key):
@@ -83,6 +116,13 @@ def create_event(db: Session, body: EventCreate) -> tuple[Event, bool]:
         if existing:
             if not _matches_request(existing, body):
                 raise IdempotencyConflictError(body.idempotency_key)
+            _log_ingest_attempt(
+                db,
+                idempotency_key=body.idempotency_key,
+                event_type=body.event_type,
+                was_duplicate=True,
+                http_status=200,
+            )
             return existing, True
         # Another request holds the Redis key; Postgres UNIQUE constraint decides the winner.
 
@@ -101,12 +141,26 @@ def create_event(db: Session, body: EventCreate) -> tuple[Event, bool]:
         if existing:
             if not _matches_request(existing, body):
                 raise IdempotencyConflictError(body.idempotency_key) from None
+            _log_ingest_attempt(
+                db,
+                idempotency_key=body.idempotency_key,
+                event_type=body.event_type,
+                was_duplicate=True,
+                http_status=200,
+            )
             return existing, True
         raise
     db.refresh(event)
 
     _enqueue_event(event.id)
     refresh_pending_gauge(db)
+    _log_ingest_attempt(
+        db,
+        idempotency_key=body.idempotency_key,
+        event_type=body.event_type,
+        was_duplicate=False,
+        http_status=201,
+    )
     return event, False
 
 

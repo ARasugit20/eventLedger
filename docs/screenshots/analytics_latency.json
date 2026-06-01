@@ -1,0 +1,18 @@
+[
+  {
+    "event_type": "order.created",
+    "processed_count": 17,
+    "p50_seconds": 0.045,
+    "p95_seconds": 0.128,
+    "p99_seconds": 0.201,
+    "avg_seconds": 0.062
+  },
+  {
+    "event_type": "claim.submitted",
+    "processed_count": 8,
+    "p50_seconds": 0.051,
+    "p95_seconds": 0.135,
+    "p99_seconds": 0.189,
+    "avg_seconds": 0.068
+  }
+]
