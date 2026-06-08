@@ -2,128 +2,19 @@
 
 [![CI](https://github.com/ARasugit20/eventLedger/actions/workflows/ci.yml/badge.svg)](https://github.com/ARasugit20/eventLedger/actions/workflows/ci.yml)
 
-**Idempotent event ingestion and async processing API for order/claims-style workflows.**
+**Idempotent event ingestion for order and claims workflows — duplicate-safe by design.**
 
-> Clients send events with an `idempotency_key`. Duplicate requests return the same result — no double processing. Events move through an audit trail: `received` → `processing` → `processed` | `failed`.
+Clients send events with an `idempotency_key`. Retries return the same result. No double processing. Full audit trail: `received` → `processing` → `processed` | `failed`.
 
-**Repository:** [github.com/ARasugit20/eventLedger](https://github.com/ARasugit20/eventLedger)  
-**API docs (local):** http://localhost:8000/docs  
-**Live demo:** _Deploy in progress — see [Deploy](#deploy)_
+**Repo:** [github.com/ARasugit20/eventLedger](https://github.com/ARasugit20/eventLedger) · **API docs:** http://localhost:8000/docs
 
 ---
 
-## Table of contents
+## 30-second pitch
 
-- [Problem](#problem)
-- [Solution](#solution)
-- [Architecture](#architecture)
-- [Tech stack](#tech-stack)
-- [Quick start](#quick-start)
-- [API reference](#api-reference)
-- [Idempotency semantics](#idempotency-semantics)
-- [Event lifecycle](#event-lifecycle)
-- [Project structure](#project-structure)
-- [Tests & CI](#tests--ci)
-- [Deploy](#deploy)
-- [Roadmap](#roadmap)
-- [What I learned](#what-i-learned)
-- [Docs](#docs)
+EventLedger is a production-style event ingestion API: FastAPI + PostgreSQL + Redis + async worker. It solves the classic distributed-systems problem — **at-least-once delivery causing duplicate side effects** — with layered idempotency (Redis SET NX + Postgres UNIQUE + worker status guards). Observability and SQL analytics are built in.
 
----
-
-## Problem
-
-In distributed systems, **duplicate events are normal**:
-
-- Payment webhooks retry on timeout
-- Mobile clients double-tap submit
-- Load balancers replay requests
-- Message brokers deliver at-least-once
-
-Without idempotency, the same `order.created` or `claim.submitted` event gets processed twice — double charges, duplicate payouts, inconsistent ledgers.
-
-## Solution
-
-EventLedger guarantees **at-most-once side effects** using layered deduplication:
-
-| Layer | Mechanism | Purpose |
-|-------|-----------|---------|
-| Fast path | Redis `SET idempotency:{key} NX EX 86400` | Reject obvious duplicates in ~1 ms |
-| Durable | PostgreSQL `UNIQUE` on `idempotency_key` | Source of truth under races / Redis TTL expiry |
-| Worker | Status guard + atomic `received → processing` claim | No double side effects on stream redelivery |
-| API | Payload match on duplicate key | Same key + different body → **409 Conflict** |
-
-Duplicate POST `/events` with the **same body** returns **200** with the original event `id`. New keys return **201**.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    Client --> FastAPI
-    FastAPI --> RedisDedupe["Redis SET NX dedupe"]
-    FastAPI --> PostgreSQL
-    FastAPI --> RedisStream["Redis Stream"]
-    RedisStream --> Worker
-    Worker --> PostgreSQL
-```
-
-**Ingest path:** validate → Redis claim → INSERT event (`received`) → XADD stream → respond  
-**Worker path:** XREADGROUP → atomic claim (`processing`) → simulate handler → `processed` | `failed`
-
-## Analytics layer
-
-SQL views over the event store answer **business questions** (not just infra metrics):
-
-| View / endpoint | Business question |
-|-----------------|-------------------|
-| `analytics_daily_ingest` / `GET /analytics/daily-volume` | How many events per day? Failure rate? |
-| `analytics_duplicate_rate` / `GET /analytics/duplicate-rate` | Which event types get the most retries? |
-| `analytics_processing_latency` / `GET /analytics/latency` | p50/p95/p99 processing time by type? |
-| `analytics_event_type_summary` | Event mix over last 7 days |
-| `analytics_system_health` / `GET /analytics/health` | Single-row KPI snapshot |
-
-Duplicate retries are logged in `ingest_attempts` (append-only); the `events` table keeps one row per `idempotency_key`.
-
-**Example SQL:**
-
-```sql
-SELECT event_type, duplicate_rate_pct, total_attempts
-FROM analytics_duplicate_rate
-ORDER BY duplicate_rate_pct DESC;
-```
-
-**Example API:**
-
-```bash
-curl http://localhost:8000/analytics/health | jq
-curl http://localhost:8000/analytics/duplicate-rate | jq
-```
-
-Sample outputs: [docs/screenshots/](docs/screenshots/)
-
-> Design note: Same pattern as **dbt mart models** — SQL-defined, business-readable, separated from the raw event store.
-
-## Tech stack
-
-| Layer | Choice | Why |
-|-------|--------|-----|
-| Language | Python 3.11 | Modern typing, wide enterprise adoption |
-| API | FastAPI + Pydantic v2 | Typed contracts, auto OpenAPI |
-| Database | PostgreSQL 16 + JSONB | ACID, unique constraints, flexible payloads |
-| Cache / queue | Redis 7 | SET NX dedupe + Streams consumer groups |
-| ORM | SQLAlchemy 2.0 + Alembic | Migrations, production data layer |
-| Testing | pytest + httpx + testcontainers | Real Postgres/Redis in CI |
-| Lint | ruff | Fast, zero-config style checks |
-| Runtime | Docker Compose | One-command local stack |
-
-## Quick start
-
-### Prerequisites
-
-- Docker Desktop (or Docker Engine + Compose v2)
-- Python 3.11+ (for local tests without Compose)
-
-### Run the full stack
+## 60-second quickstart
 
 ```bash
 git clone https://github.com/ARasugit20/eventLedger.git
@@ -133,222 +24,108 @@ docker compose up --build
 
 | Service | URL |
 |---------|-----|
-| API | http://localhost:8000 |
-| OpenAPI | http://localhost:8000/docs |
-| **Metrics** | http://localhost:8000/metrics |
-| **Prometheus** | http://localhost:9090 |
-| **Grafana** | http://localhost:3000 (admin/admin) |
-| PostgreSQL | `localhost:5432` |
-| Redis | `localhost:6379` |
+| API + OpenAPI | http://localhost:8000/docs |
+| Metrics | http://localhost:8000/metrics |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3000 (admin/admin) |
 
-### Sample curl flow
+## Run this now
 
 ```bash
-# 1. Health check
-curl -s http://localhost:8000/health | jq
-
-# 2. Ingest event (201 Created)
+# Ingest + duplicate retry (201 then 200)
 curl -s -X POST http://localhost:8000/events \
   -H "Content-Type: application/json" \
-  -d '{
-    "idempotency_key": "order-8821-create",
-    "event_type": "order.created",
-    "payload": {"sku": "X1", "quantity": 2, "customer_id": "c-99"}
-  }' | jq
+  -d '{"idempotency_key":"demo-001","event_type":"order.created","payload":{"sku":"X1"}}' | jq
 
-# 3. Duplicate ingest (200 OK — same event id)
 curl -s -X POST http://localhost:8000/events \
   -H "Content-Type: application/json" \
-  -d '{
-    "idempotency_key": "order-8821-create",
-    "event_type": "order.created",
-    "payload": {"sku": "X1", "quantity": 2, "customer_id": "c-99"}
-  }' | jq
+  -d '{"idempotency_key":"demo-001","event_type":"order.created","payload":{"sku":"X1"}}' | jq
 
-# 4. Poll until worker marks processed
-curl -s http://localhost:8000/events/<EVENT_ID> | jq
+# Seed analytics demo data (orders, claims, duplicates)
+make seed-analytics-demo
 
-# 5. List processed events
-curl -s "http://localhost:8000/events?status=processed&limit=10" | jq
+# Business KPIs
+curl -s http://localhost:8000/analytics/health | jq
+curl -s http://localhost:8000/analytics/duplicate-rate | jq
 ```
 
-## API reference
-
-| Method | Path | Status | Description |
-|--------|------|--------|-------------|
-| GET | `/health` | 200 | Liveness; checks PostgreSQL + Redis |
-| POST | `/events` | 201 | New event ingested |
-| POST | `/events` | 200 | Duplicate idempotency key (same body) |
-| POST | `/events` | 409 | Same key, different payload |
-| POST | `/events` | 422 | Validation error |
-| GET | `/events/{id}` | 200 / 404 | Single event by UUID |
-| GET | `/events` | 200 | List with `?status=` `limit` `offset` |
-
-### POST `/events` body
-
-```json
-{
-  "idempotency_key": "order-8821-create",
-  "event_type": "order.created",
-  "payload": { "sku": "X1", "quantity": 2, "customer_id": "c-99" }
-}
-```
-
-### Event response fields
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `id` | UUID | Client-facing event id |
-| `idempotency_key` | string | Dedupe key |
-| `event_type` | string | e.g. `order.created`, `claim.submitted` |
-| `payload` | object | Opaque JSON body |
-| `status` | enum | `received`, `processing`, `processed`, `failed` |
-| `result` | object? | Worker output when processed |
-| `error_message` | string? | Set when failed |
-| `created_at` | datetime | Ingest time |
-| `processed_at` | datetime? | Terminal state time |
-
-## Idempotency semantics
-
-1. **New key** → Redis NX succeeds → INSERT → enqueue → **201**
-2. **Duplicate key, same body** → return existing row → **200**
-3. **Duplicate key, different body** → **409 Conflict** (key reuse abuse)
-4. **Concurrent duplicates** → DB unique constraint + Redis; all callers get same `id`
-5. **Redis TTL expired, DB row exists** → INSERT fails → fetch existing → **200**
-
-**Trade-off:** Redis is an optimization layer. PostgreSQL is always authoritative.
-
-## Event lifecycle
-
-```
-received → processing → processed
-                      ↘ failed
-```
-
-- **received:** persisted and enqueued to Redis Stream
-- **processing:** worker atomically claimed the event
-- **processed:** worker wrote `result` JSON
-- **failed:** worker caught an error; `error_message` retained for audit
-
-Simulate failure: use an `event_type` ending in `.fail` (e.g. `claim.fail`).
-
-## Project structure
-
-```
-eventLedger/
-├── app/
-│   ├── main.py              # FastAPI routes, middleware, exception handlers
-│   ├── config.py            # pydantic-settings
-│   ├── db.py                # SQLAlchemy engine + session
-│   ├── models.py            # Event ORM model
-│   ├── schemas.py           # Pydantic request/response models
-│   ├── exceptions.py        # IdempotencyConflictError
-│   ├── metrics.py           # Prometheus counters, histograms, gauges
-│   ├── routers/analytics.py # GET /analytics/* over SQL views
-│   ├── worker.py            # Redis Streams consumer
-│   └── services/
-│       ├── events.py        # Ingest, list, worker helpers
-│       └── idempotency.py   # Redis SET NX
-├── analytics/               # SQL views + apply script
-│   └── views.sql
-├── alembic/                 # Database migrations
-├── tests/                   # pytest suite (19 tests)
-├── docs/
-│   ├── INTERVIEW.md         # System design talking points
-│   └── LOAD_TEST.md         # Load test commands + bottlenecks
-├── docker-compose.yml
-├── Dockerfile
-└── .github/workflows/ci.yml
-```
-
-## Observability (Prometheus)
-
-EventLedger exposes Prometheus metrics at **`GET /metrics`**:
-
-| Metric | Type | Meaning |
-|--------|------|---------|
-| `events_ingested_total{result="new\|duplicate"}` | Counter | Ingest volume split by new vs retry |
-| `event_processing_duration_seconds` | Histogram | Worker handler latency |
-| `events_pending_processing` | Gauge | Events in `received` or `processing` |
-
-With `docker compose up`, Prometheus scrapes the API and Grafana loads a pre-built dashboard.
-
-```bash
-# After a few curl POSTs to /events:
-open http://localhost:9090   # Prometheus
-open http://localhost:3000   # Grafana → EventLedger Overview
-```
-
-## Tests & CI
-
-### Run tests locally
-
-**Option A — testcontainers (matches CI):**
-
-```bash
-pip install -r requirements.txt
-pytest -v
-```
-
-**Option B — against running Compose stack:**
-
-```bash
-docker compose up -d postgres redis
-alembic upgrade head
-USE_EXTERNAL_SERVICES=1 pytest -v
-```
-
-### Test coverage highlights
-
-| Test file | What it proves |
-|-----------|----------------|
-| `test_idempotency.py` | Duplicate → 200 same id; concurrent races; 409 on payload conflict |
-| `test_analytics.py` | `/analytics/*` endpoints return KPIs after ingest |
-| `test_concurrency.py` | 50 parallel POSTs, same key → exactly 1 row in DB |
-| `test_metrics.py` | `/metrics` exposes ingest counter after POST |
-| `test_integration.py` | Stream enqueue; worker pipeline; failed events; double-process guard |
-| `test_health.py` | DB + Redis connectivity |
-| `test_events_service.py` | Stable SHA-256 payload fingerprint |
-
-### Lint
-
-```bash
-ruff check app tests
-```
-
-GitHub Actions runs **ruff + pytest** on every push to `main`.
-
-## Deploy
-
-**Render / Railway (recommended):**
-
-1. Add PostgreSQL 16 and Redis 7
-2. **API service:** `alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-3. **Worker service:** `alembic upgrade head && python -m app.worker`
-4. Set `DATABASE_URL`, `REDIS_URL` from `.env.example`
-
-## Roadmap
-
-- [x] Phase 1 — Core API, Alembic, structured logging, global error handler
-- [x] Phase 2 — Redis dedupe, Redis Streams worker, status lifecycle
-- [x] Phase 3 — Tests, CI, interview + load-test docs
-- [x] Hardening — 409 payload conflict, concurrent idempotency tests, enqueue retry
-- [ ] Auth / API keys
-- [ ] Dead-letter queue stream + replay
-- [ ] Prometheus metrics + Grafana
-- [ ] Live cloud deploy URL
-
-## What I learned
-
-- **Idempotency is a contract, not a library** — client keys, DB constraints, and worker guards must work together; any single layer races under retries.
-- **Redis NX before DB is a latency win with a TTL caveat** — PostgreSQL must remain the authoritative dedupe store.
-- **At-least-once delivery is acceptable** when side effects are guarded by atomic status claims and terminal-state checks in workers.
-
-## Docs
-
-- [Interview talking points](docs/INTERVIEW.md) — idempotency, at-least-once, DLQ, 10× failure modes
-- [Load testing notes](docs/LOAD_TEST.md) — `hey` / `wrk` commands and first bottlenecks
+Open Grafana → **EventLedger Overview** for ingest rate, worker latency, and pending queue.
 
 ---
 
-**Resume bullet:** Built EventLedger, an idempotent event ingestion API (FastAPI, PostgreSQL, Redis) with async workers, duplicate-request safety, and CI-verified tests; documented failure modes under 10× load.
+## Business questions answered
+
+| Endpoint | Question |
+|----------|----------|
+| `GET /analytics/health` | How healthy is the pipeline right now? |
+| `GET /analytics/duplicate-rate` | Which event types see the most retries? |
+| `GET /analytics/latency` | p50/p95/p99 processing time by type? |
+| `GET /analytics/daily-volume` | Daily ingest volume and failure rate? |
+
+Duplicate HTTP retries log to `ingest_attempts`; `events` keeps one row per `idempotency_key`.
+
+---
+
+## How idempotency works
+
+| Layer | Mechanism | Role |
+|-------|-----------|------|
+| Fast path | Redis `SET NX` | Reject obvious duplicates in ~1 ms |
+| Durable | Postgres `UNIQUE(idempotency_key)` | Source of truth under races |
+| Worker | Atomic `received → processing` claim | No double side effects on redelivery |
+| API | Payload fingerprint match | Same key + different body → **409** |
+
+Duplicate POST with same body → **200** (same event id). New key → **201**.
+
+```mermaid
+flowchart LR
+    Client --> FastAPI
+    FastAPI --> RedisDedupe["Redis SET NX"]
+    FastAPI --> PostgreSQL
+    FastAPI --> RedisStream["Redis Stream"]
+    RedisStream --> Worker
+    Worker --> PostgreSQL
+```
+
+---
+
+## Verify locally
+
+```bash
+pip install -r requirements.txt
+make test-cov          # pytest + 75% coverage gate
+ruff check app tests analytics scripts
+```
+
+CI runs the same gates on every push. See [docs/CONTRIBUTIONS.md](docs/CONTRIBUTIONS.md) for commit attribution guidance.
+
+---
+
+## Stack
+
+Python 3.11 · FastAPI · PostgreSQL 16 · Redis 7 · SQLAlchemy 2 + Alembic · pytest + testcontainers · Prometheus + Grafana · Docker Compose
+
+---
+
+## Project layout
+
+```
+app/           FastAPI routes, worker, metrics, services
+analytics/     SQL views + apply script
+tests/         Idempotency, concurrency, analytics, metrics
+deploy/        Prometheus + Grafana provisioning
+scripts/       seed_analytics_demo.py
+docs/          Interview notes, load test, contributions
+```
+
+---
+
+## Deep dive docs
+
+- [Interview talking points](docs/INTERVIEW.md) — idempotency, at-least-once, failure modes
+- [Load testing](docs/LOAD_TEST.md) — `hey` / `wrk` commands
+- [Contributions & GitHub graph](docs/CONTRIBUTIONS.md) — email, timestamps, green squares
+
+---
+
+**Resume bullet:** Built EventLedger — idempotent event ingestion API (FastAPI, PostgreSQL, Redis) with async workers, Prometheus observability, SQL analytics, and CI-verified concurrency tests.
