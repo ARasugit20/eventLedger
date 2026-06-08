@@ -6,9 +6,14 @@ on:
   pull_request:
     branches: [main, master]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -22,7 +27,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Lint
-        run: ruff check app tests
+        run: ruff check app tests analytics scripts
 
       - name: Run tests
-        run: pytest -v --tb=short
+        run: pytest -v --tb=short --maxfail=1
