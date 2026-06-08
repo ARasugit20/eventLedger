@@ -29,7 +29,7 @@ DEFAULT_HEALTH = {
 
 
 def _serialize(value: Any) -> Any:
-    if isinstance(value, (datetime, date)):
+    if isinstance(value, datetime | date):
         return value.isoformat()
     if isinstance(value, Decimal):
         return float(value)

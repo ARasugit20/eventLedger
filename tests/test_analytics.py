@@ -11,7 +11,7 @@ async def test_analytics_health_returns_kpis(client, sample_event):
     assert body["total_events_all_time"] >= 1
     assert body["events_last_24h"] >= 1
     assert "overall_success_rate_pct" in body
-    assert isinstance(body["overall_success_rate_pct"], (int, float))
+    assert isinstance(body["overall_success_rate_pct"], int | float)
     assert body["p95_latency_seconds"] >= 0
 
 
