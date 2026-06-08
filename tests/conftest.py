@@ -19,7 +19,7 @@ def _reload_app_modules():
 
     importlib.reload(app.config)
     importlib.reload(app.db)
-    idempotency._redis_client = None
+    importlib.reload(idempotency)
 
 
 @pytest.fixture(scope="session")
