@@ -1,4 +1,4 @@
-.PHONY: up down test migrate logs analytics-apply
+.PHONY: up down test migrate logs analytics-apply seed-analytics-demo
 
 up:
 	docker compose up --build
@@ -11,6 +11,9 @@ migrate:
 
 analytics-apply:
 	psql $$DATABASE_URL -f analytics/views.sql
+
+seed-analytics-demo:
+	python scripts/seed_analytics_demo.py
 
 test:
 	pytest -v --tb=short
