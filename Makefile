@@ -13,7 +13,10 @@ analytics-apply:
 	psql $$DATABASE_URL -f analytics/views.sql
 
 test:
-	USE_EXTERNAL_SERVICES=1 pytest -v
+	pytest -v --tb=short
+
+test-cov:
+	pytest -v --cov=app --cov-report=term-missing --cov-fail-under=75
 
 test-containers:
 	pytest -v
