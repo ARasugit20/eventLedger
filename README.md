@@ -87,6 +87,12 @@ flowchart LR
     Worker --> PostgreSQL
 ```
 
+## Delivery guarantees
+
+> **At-least-once stream delivery** with **at-most-once side effects** via idempotency keys and worker status guards. Not exactly-once end-to-end.
+
+See [docs/OPERATIONS.md](docs/OPERATIONS.md) for retry/DLQ behavior, correlation IDs, metrics, and failure modes.
+
 ---
 
 ## Verify locally
@@ -95,9 +101,8 @@ flowchart LR
 pip install -r requirements.txt
 make test-cov          # pytest + 75% coverage gate
 ruff check app tests analytics scripts
+make demo              # end-to-end seed + analytics (stack must be running)
 ```
-
-CI runs the same gates on every push. See [docs/CONTRIBUTIONS.md](docs/CONTRIBUTIONS.md) for commit attribution guidance.
 
 ---
 
@@ -122,6 +127,7 @@ docs/          Interview notes, load test, contributions
 
 ## Deep dive docs
 
+- [Operations guide](docs/OPERATIONS.md) — retry/DLQ, correlation IDs, alerts
 - [Interview talking points](docs/INTERVIEW.md) — idempotency, at-least-once, failure modes
 - [Load testing](docs/LOAD_TEST.md) — `hey` / `wrk` commands
 - [Contributions & GitHub graph](docs/CONTRIBUTIONS.md) — email, timestamps, green squares

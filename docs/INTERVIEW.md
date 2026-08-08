@@ -62,4 +62,21 @@ This proves Redis NX + Postgres UNIQUE + transaction handling is **race-safe** u
 
 ---
 
-See also: [LOAD_TEST.md](./LOAD_TEST.md)
+## Q6: How do retries and the dead-letter queue work?
+
+**Answer:** Redis Streams deliver **at-least-once** to the worker consumer group. EventLedger handles that without double side effects:
+
+| Outcome | Behavior |
+|---------|----------|
+| **Success** | Event marked `processed`, message ACKed |
+| **Permanent failure** (e.g. `.fail` types) | Event marked `failed`, message ACKed |
+| **Transient failure** (e.g. `.retry` types) | Claim released to `received`, message stays pending |
+| **Max redeliveries exceeded** | Message moved to DLQ stream, then ACKed |
+
+Stale pending messages are reclaimed with `XAUTOCLAIM` so crashed workers don't strand work. DLQ replay is manual — inspect `eventledger:stream:dlq` and re-ingest if appropriate.
+
+**Interview line:** "We guarantee idempotent side effects, not exactly-once delivery. The DLQ catches poison pills after bounded retries."
+
+---
+
+See also: [LOAD_TEST.md](./LOAD_TEST.md), [OPERATIONS.md](./OPERATIONS.md)

@@ -1,4 +1,4 @@
-.PHONY: up down test migrate logs analytics-apply seed-analytics-demo
+.PHONY: up down test migrate logs analytics-apply seed-analytics-demo demo
 
 up:
 	docker compose up --build
@@ -14,6 +14,9 @@ analytics-apply:
 
 seed-analytics-demo:
 	python scripts/seed_analytics_demo.py
+
+demo:
+	python scripts/seed_analytics_demo.py --wait
 
 test:
 	pytest -v --tb=short
