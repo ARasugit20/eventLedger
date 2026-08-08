@@ -7,6 +7,7 @@ Key routes: ingest_event (201 new / 200 duplicate), get_event, list_all_events, 
 
 import logging
 import time
+import uuid
 from contextlib import asynccontextmanager
 from uuid import UUID
 
@@ -55,16 +56,27 @@ app.include_router(analytics.router)
 
 
 @app.middleware("http")
+async def correlation_middleware(request: Request, call_next):
+    correlation_id = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
+    request.state.correlation_id = correlation_id
+    response = await call_next(request)
+    response.headers["X-Correlation-ID"] = correlation_id
+    return response
+
+
+@app.middleware("http")
 async def log_requests(request: Request, call_next):
     start = time.perf_counter()
     response = await call_next(request)
     latency_ms = round((time.perf_counter() - start) * 1000, 2)
+    correlation_id = getattr(request.state, "correlation_id", "")
     logger.info(
-        '{"path":"%s","method":"%s","status_code":%s,"latency_ms":%s}',
+        '{"path":"%s","method":"%s","status_code":%s,"latency_ms":%s,"correlation_id":"%s"}',
         request.url.path,
         request.method,
         response.status_code,
         latency_ms,
+        correlation_id,
     )
     return response
 
@@ -111,20 +123,28 @@ def health() -> HealthResponse:
 
 
 @app.post("/events", response_model=EventResponse, status_code=status.HTTP_201_CREATED)
-def ingest_event(body: EventCreate, response: Response, db: Session = Depends(get_db)):
+def ingest_event(
+    body: EventCreate,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
     start = time.perf_counter()
-    event, is_duplicate = create_event(db, body)
+    correlation_id = getattr(request.state, "correlation_id", "")
+    event, is_duplicate = create_event(db, body, correlation_id=correlation_id)
     latency_ms = round((time.perf_counter() - start) * 1000, 2)
 
     # Track new vs duplicate ingests for dashboards and alerting.
     events_ingested_total.labels(result="duplicate" if is_duplicate else "new").inc()
 
     logger.info(
-        '{"event_id":"%s","idempotency_key":"%s","duplicate":%s,"latency_ms":%s}',
+        '{"event_id":"%s","idempotency_key":"%s","duplicate":%s,"latency_ms":%s,'
+        '"correlation_id":"%s"}',
         event.id,
         event.idempotency_key,
         str(is_duplicate).lower(),
         latency_ms,
+        correlation_id,
     )
     if is_duplicate:
         response.status_code = status.HTTP_200_OK
