@@ -1,0 +1,26 @@
+groups:
+  - name: eventledger
+    rules:
+      - alert: EventLedgerHighPendingBacklog
+        expr: events_pending_processing > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: EventLedger pending events backlog is high
+
+      - alert: EventLedgerDLQMessages
+        expr: increase(dlq_messages_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: EventLedger dead-letter queue received messages
+
+      - alert: EventLedgerStreamPending
+        expr: stream_pending_messages > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: EventLedger Redis stream pending entries are elevated

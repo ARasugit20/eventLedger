@@ -6,6 +6,10 @@ Key metrics:
   - events_ingested_total{result="new|duplicate"} — ingest volume
   - event_processing_duration_seconds — worker latency
   - events_pending_processing — count of events not yet processed
+  - worker_processing_failures_total — permanent handler failures
+  - worker_retries_total — transient retries before DLQ
+  - dlq_messages_total — poison messages moved to DLQ stream
+  - stream_pending_messages — Redis PEL depth
 """
 
 from prometheus_client import Counter, Gauge, Histogram
@@ -23,4 +27,20 @@ event_processing_duration_seconds = Histogram(
 events_pending_processing = Gauge(
     "events_pending_processing",
     "Events waiting in received or processing status",
+)
+worker_processing_failures_total = Counter(
+    "worker_processing_failures_total",
+    "Permanent worker processing failures",
+)
+worker_retries_total = Counter(
+    "worker_retries_total",
+    "Transient worker retries before ack or DLQ",
+)
+dlq_messages_total = Counter(
+    "dlq_messages_total",
+    "Messages moved to the dead-letter stream",
+)
+stream_pending_messages = Gauge(
+    "stream_pending_messages",
+    "Redis stream pending entries for the consumer group",
 )
