@@ -12,13 +12,21 @@ from uuid import UUID
 
 from app.config import settings
 from app.db import SessionLocal
-from app.metrics import event_processing_duration_seconds
+from app.exceptions import TransientProcessingError
+from app.metrics import (
+    dlq_messages_total,
+    event_processing_duration_seconds,
+    stream_pending_messages,
+    worker_processing_failures_total,
+    worker_retries_total,
+)
 from app.models import EventStatus
 from app.services.events import (
     get_event_by_id,
     mark_failed,
     mark_processed,
     refresh_pending_gauge,
+    release_processing_claim,
     simulate_processing,
     try_claim_for_processing,
 )
@@ -44,7 +52,52 @@ def ensure_consumer_group() -> None:
             raise
 
 
-def process_message(event_id: str) -> bool:
+def refresh_stream_pending_gauge() -> None:
+    client = get_redis()
+    try:
+        pending = client.xpending(settings.event_stream, settings.consumer_group)
+        stream_pending_messages.set(pending["pending"])
+    except Exception:
+        stream_pending_messages.set(0)
+
+
+def get_delivery_count(message_id: str) -> int:
+    client = get_redis()
+    entries = client.xpending_range(
+        settings.event_stream,
+        settings.consumer_group,
+        message_id,
+        message_id,
+        1,
+    )
+    if not entries:
+        return 1
+    entry = entries[0]
+    return int(entry.get("times_delivered", entry.get("delivery_count", 1)))
+
+
+def move_to_dlq(message_id: str, fields: dict[str, str], reason: str) -> None:
+    client = get_redis()
+    client.xadd(
+        settings.dlq_stream,
+        {
+            "source_message_id": message_id,
+            "event_id": fields.get("event_id", ""),
+            "correlation_id": fields.get("correlation_id", ""),
+            "reason": reason,
+        },
+    )
+    dlq_messages_total.inc()
+    logger.error(
+        '{"message_id":"%s","event_id":"%s","correlation_id":"%s","status":"dlq","reason":"%s"}',
+        message_id,
+        fields.get("event_id", ""),
+        fields.get("correlation_id", ""),
+        reason,
+    )
+
+
+def process_message(event_id: str, *, correlation_id: str = "") -> bool:
     """Process one event. Returns True if work was performed."""
     db = SessionLocal()
     try:
@@ -52,29 +105,124 @@ def process_message(event_id: str) -> bool:
 
         event = get_event_by_id(db, UUID(event_id))
         if not event:
-            logger.warning("Event %s not found", event_id)
+            logger.warning(
+                '{"event_id":"%s","correlation_id":"%s","status":"missing"}',
+                event_id,
+                correlation_id,
+            )
             return False
         if event.status in (EventStatus.processed, EventStatus.failed):
-            logger.info("Event %s already terminal (%s)", event_id, event.status.value)
+            logger.info(
+                '{"event_id":"%s","correlation_id":"%s","status":"terminal","state":"%s"}',
+                event_id,
+                correlation_id,
+                event.status.value,
+            )
             return False
 
         event = try_claim_for_processing(db, UUID(event_id))
         if not event:
-            logger.info("Event %s already claimed or not in received state", event_id)
+            logger.info(
+                '{"event_id":"%s","correlation_id":"%s","status":"already_claimed"}',
+                event_id,
+                correlation_id,
+            )
             return False
 
-        # Histogram lets Grafana show p50/p99 worker latency under load.
         with event_processing_duration_seconds.time():
             try:
                 result = simulate_processing(event)
                 mark_processed(db, event, result)
-                logger.info('{"event_id":"%s","status":"processed"}', event_id)
+                logger.info(
+                    '{"event_id":"%s","correlation_id":"%s","status":"processed"}',
+                    event_id,
+                    correlation_id,
+                )
+            except TransientProcessingError:
+                release_processing_claim(db, UUID(event_id))
+                raise
             except Exception as exc:
                 mark_failed(db, event, str(exc))
-                logger.error('{"event_id":"%s","status":"failed","error":"%s"}', event_id, exc)
+                worker_processing_failures_total.inc()
+                logger.error(
+                    '{"event_id":"%s","correlation_id":"%s","status":"failed","error":"%s"}',
+                    event_id,
+                    correlation_id,
+                    exc,
+                )
         return True
     finally:
         db.close()
+
+
+def handle_stream_message(message_id: str, fields: dict[str, str]) -> None:
+    """Ack, retry, or DLQ a single stream message based on handler outcome."""
+    client = get_redis()
+    event_id = fields.get("event_id")
+    correlation_id = fields.get("correlation_id", "")
+
+    if not event_id:
+        client.xack(settings.event_stream, settings.consumer_group, message_id)
+        return
+
+    try:
+        process_message(event_id, correlation_id=correlation_id)
+        client.xack(settings.event_stream, settings.consumer_group, message_id)
+    except TransientProcessingError as exc:
+        delivery_count = get_delivery_count(message_id)
+        worker_retries_total.inc()
+        logger.warning(
+            '{"event_id":"%s","correlation_id":"%s","status":"retry","delivery_count":%s}',
+            event_id,
+            correlation_id,
+            delivery_count,
+        )
+        if delivery_count >= settings.max_delivery_attempts:
+            move_to_dlq(message_id, fields, str(exc))
+            client.xack(settings.event_stream, settings.consumer_group, message_id)
+    except Exception:
+        worker_processing_failures_total.inc()
+        logger.exception(
+            '{"event_id":"%s","correlation_id":"%s","status":"handler_error"}',
+            event_id,
+            correlation_id,
+        )
+        raise
+
+
+def reclaim_stale_messages(consumer_name: str = CONSUMER_NAME) -> int:
+    """Reclaim idle pending messages via XAUTOCLAIM and process them."""
+    client = get_redis()
+    reclaimed = 0
+    start_id = "0-0"
+
+    while True:
+        result = client.xautoclaim(
+            settings.event_stream,
+            settings.consumer_group,
+            consumer_name,
+            settings.pending_idle_ms,
+            start_id,
+            count=10,
+        )
+        if len(result) == 3:
+            _next_id, messages, _deleted = result
+        else:
+            _next_id, messages = result
+
+        if not messages:
+            break
+
+        for message_id, fields in messages:
+            handle_stream_message(message_id, fields)
+            reclaimed += 1
+
+        start_id = _next_id
+        if start_id == "0-0":
+            break
+
+    refresh_stream_pending_gauge()
+    return reclaimed
 
 
 def run_worker() -> None:
@@ -84,6 +232,9 @@ def run_worker() -> None:
 
     while True:
         try:
+            reclaim_stale_messages()
+            refresh_stream_pending_gauge()
+
             messages = client.xreadgroup(
                 settings.consumer_group,
                 CONSUMER_NAME,
@@ -96,15 +247,7 @@ def run_worker() -> None:
 
             for _stream, entries in messages:
                 for message_id, fields in entries:
-                    event_id = fields.get("event_id")
-                    if not event_id:
-                        client.xack(settings.event_stream, settings.consumer_group, message_id)
-                        continue
-                    try:
-                        process_message(event_id)
-                        client.xack(settings.event_stream, settings.consumer_group, message_id)
-                    except Exception:
-                        logger.exception("Failed processing message %s", message_id)
+                    handle_stream_message(message_id, fields)
         except Exception:
             logger.exception("Worker loop error")
             time.sleep(1)

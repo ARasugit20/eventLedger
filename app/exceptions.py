@@ -11,3 +11,7 @@ class IdempotencyConflictError(Exception):
     def __init__(self, idempotency_key: str):
         self.idempotency_key = idempotency_key
         super().__init__(f"Idempotency key '{idempotency_key}' already used with different payload")
+
+
+class TransientProcessingError(Exception):
+    """Retryable worker failure — message stays pending until max attempts, then DLQ."""

@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.exceptions import IdempotencyConflictError
+from app.exceptions import IdempotencyConflictError, TransientProcessingError
 from app.metrics import events_pending_processing
 from app.models import Event, EventStatus
 from app.schemas import EventCreate
@@ -30,15 +30,23 @@ def _matches_request(event: Event, body: EventCreate) -> bool:
     return event.event_type == body.event_type and event.payload == body.payload
 
 
-def _enqueue_event(event_id: UUID, retries: int = 3) -> None:
+def _enqueue_event(event_id: UUID, *, correlation_id: str = "", retries: int = 3) -> None:
     client = get_redis()
+    payload = {"event_id": str(event_id), "correlation_id": correlation_id, "attempt": "1"}
     for attempt in range(retries):
         try:
-            client.xadd(settings.event_stream, {"event_id": str(event_id)})
+            client.xadd(settings.event_stream, payload)
+            logger.info(
+                '{"event_id":"%s","correlation_id":"%s","status":"enqueued"}',
+                event_id,
+                correlation_id,
+            )
             return
         except Exception:
             if attempt == retries - 1:
-                logger.exception("Failed to enqueue event %s after %s attempts", event_id, retries)
+                logger.exception(
+                    "Failed to enqueue event %s after %s attempts", event_id, retries
+                )
                 return
             time.sleep(0.05 * (2**attempt))
 
@@ -96,7 +104,7 @@ def _log_ingest_attempt(
     db.commit()
 
 
-def create_event(db: Session, body: EventCreate) -> tuple[Event, bool]:
+def create_event(db: Session, body: EventCreate, *, correlation_id: str = "") -> tuple[Event, bool]:
     """Returns (event, is_duplicate). Duplicate = same idempotency_key already stored."""
     existing = get_event_by_idempotency_key(db, body.idempotency_key)
     if existing:
@@ -152,7 +160,7 @@ def create_event(db: Session, body: EventCreate) -> tuple[Event, bool]:
         raise
     db.refresh(event)
 
-    _enqueue_event(event.id)
+    _enqueue_event(event.id, correlation_id=correlation_id)
     refresh_pending_gauge(db)
     _log_ingest_attempt(
         db,
@@ -201,6 +209,19 @@ def try_claim_for_processing(db: Session, event_id: UUID) -> Event | None:
     return get_event_by_id(db, event_id)
 
 
+def release_processing_claim(db: Session, event_id: UUID) -> None:
+    """Return a transiently failed event to received so stream redelivery can retry."""
+    stmt = (
+        update(Event)
+        .where(Event.id == event_id)
+        .where(Event.status == EventStatus.processing)
+        .values(status=EventStatus.received)
+    )
+    db.execute(stmt)
+    db.commit()
+    refresh_pending_gauge(db)
+
+
 def mark_processed(db: Session, event: Event, result: dict) -> Event:
     event.status = EventStatus.processed
     event.result = result
@@ -229,6 +250,9 @@ def stable_payload_hash(payload: dict) -> str:
 
 def simulate_processing(event: Event) -> dict:
     """Deterministic worker output for demo and tests."""
+    if event.event_type.endswith(".retry"):
+        raise TransientProcessingError(f"Transient failure for event type {event.event_type}")
+
     if event.event_type.endswith(".fail"):
         raise ValueError(f"Simulated failure for event type {event.event_type}")
 
