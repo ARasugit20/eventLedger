@@ -1,4 +1,8 @@
 import pytest
+from sqlalchemy import text
+
+from app.db import SessionLocal
+from app.worker import process_message
 
 
 @pytest.mark.asyncio
@@ -51,8 +55,6 @@ async def test_analytics_duplicate_rate_empty(client):
 
 @pytest.mark.asyncio
 async def test_analytics_latency_and_daily_volume(client, sample_event):
-    from app.worker import process_message
-
     create = await client.post("/events", json=sample_event)
     process_message(create.json()["id"])
 
@@ -72,3 +74,29 @@ async def test_analytics_latency_and_daily_volume(client, sample_event):
     assert isinstance(daily_rows, list)
     assert len(daily_rows) >= 1
     assert daily_rows[0]["total_events"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_analytics_latency_excludes_invalid_processed_at(client):
+    db = SessionLocal()
+    try:
+        db.execute(
+            text(
+                """
+                INSERT INTO events (
+                    id, idempotency_key, event_type, payload, status,
+                    created_at, processed_at
+                ) VALUES (
+                    gen_random_uuid(), 'bad-latency-key', 'order.created', '{}', 'processed',
+                    NOW(), NOW() - INTERVAL '1 hour'
+                )
+                """
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    latency = await client.get("/analytics/latency")
+    assert latency.status_code == 200
+    assert latency.json() == []
