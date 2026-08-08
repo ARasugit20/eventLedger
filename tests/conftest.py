@@ -7,19 +7,25 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, text
 
+os.environ.setdefault("TESTING", "1")
 os.environ.setdefault("LOG_LEVEL", "WARNING")
 
 USE_EXTERNAL = os.environ.get("USE_EXTERNAL_SERVICES") == "1"
 
+_APP_MODULES = (
+    "app.config",
+    "app.db",
+    "app.services.idempotency",
+    "app.services.events",
+    "app.worker",
+    "app.main",
+)
+
 
 def _reload_app_modules():
-    import app.config
-    import app.db
-    import app.services.idempotency as idempotency
-
-    importlib.reload(app.config)
-    importlib.reload(app.db)
-    importlib.reload(idempotency)
+    for name in _APP_MODULES:
+        module = importlib.import_module(name)
+        importlib.reload(module)
 
 
 @pytest.fixture(scope="session")
@@ -92,6 +98,7 @@ def clean_state(app_engine, redis_url):
 
 @pytest.fixture
 def client(app_engine):
+    _reload_app_modules()
     from app.main import app
 
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
