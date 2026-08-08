@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 from sqlalchemy.orm import Session
@@ -24,6 +25,9 @@ async def test_concurrent_duplicate_ingest(client, sample_event):
     assert created == 1, f"expected exactly one 201, got {created}"
     assert duplicates == 49, f"expected 49 duplicates, got {duplicates}"
 
+    bodies = [r.json() for r in responses]
+    assert len({json.dumps(b, sort_keys=True) for b in bodies}) == 1
+
     ids = {r.json()["id"] for r in responses}
     assert len(ids) == 1
 
@@ -33,6 +37,7 @@ async def test_concurrent_duplicate_ingest(client, sample_event):
         event = db.query(Event).one()
         assert event.idempotency_key == sample_event["idempotency_key"]
         assert event.event_type == sample_event["event_type"]
+        assert event.payload == sample_event["payload"]
     finally:
         db.close()
 
@@ -52,3 +57,27 @@ async def test_concurrent_duplicate_ingest_analytics(client, sample_event):
 
     health = await client.get("/analytics/health")
     assert health.json()["total_events_all_time"] == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_payload_conflict_returns_409(client, sample_event):
+    """Same idempotency key with different payload must never create a second row."""
+    first = await client.post("/events", json=sample_event)
+    assert first.status_code == 201
+
+    conflict_body = {
+        **sample_event,
+        "payload": {"sku": "DIFFERENT", "quantity": 99},
+    }
+    responses = await asyncio.gather(
+        *[client.post("/events", json=conflict_body) for _ in range(10)]
+    )
+    assert all(r.status_code == 409 for r in responses)
+
+    db: Session = SessionLocal()
+    try:
+        assert count_events(db) == 1
+        event = db.query(Event).one()
+        assert event.payload == sample_event["payload"]
+    finally:
+        db.close()
