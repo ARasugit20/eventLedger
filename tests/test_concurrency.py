@@ -2,15 +2,13 @@ import asyncio
 import json
 
 import pytest
-from sqlalchemy.orm import Session
 
-from app.db import SessionLocal
 from app.models import Event
 from app.services.events import count_events
 
 
 @pytest.mark.asyncio
-async def test_concurrent_duplicate_ingest(client, sample_event):
+async def test_concurrent_duplicate_ingest(client, db_session, sample_event):
     """50 parallel POSTs with the same idempotency_key must create exactly one row."""
     responses = await asyncio.gather(
         *[client.post("/events", json=sample_event) for _ in range(50)]
@@ -31,15 +29,11 @@ async def test_concurrent_duplicate_ingest(client, sample_event):
     ids = {r.json()["id"] for r in responses}
     assert len(ids) == 1
 
-    db: Session = SessionLocal()
-    try:
-        assert count_events(db) == 1
-        event = db.query(Event).one()
-        assert event.idempotency_key == sample_event["idempotency_key"]
-        assert event.event_type == sample_event["event_type"]
-        assert event.payload == sample_event["payload"]
-    finally:
-        db.close()
+    assert count_events(db_session) == 1
+    event = db_session.query(Event).one()
+    assert event.idempotency_key == sample_event["idempotency_key"]
+    assert event.event_type == sample_event["event_type"]
+    assert event.payload == sample_event["payload"]
 
 
 @pytest.mark.asyncio
@@ -60,7 +54,7 @@ async def test_concurrent_duplicate_ingest_analytics(client, sample_event):
 
 
 @pytest.mark.asyncio
-async def test_concurrent_payload_conflict_returns_409(client, sample_event):
+async def test_concurrent_payload_conflict_returns_409(client, db_session, sample_event):
     """Same idempotency key with different payload must never create a second row."""
     first = await client.post("/events", json=sample_event)
     assert first.status_code == 201
@@ -74,10 +68,6 @@ async def test_concurrent_payload_conflict_returns_409(client, sample_event):
     )
     assert all(r.status_code == 409 for r in responses)
 
-    db: Session = SessionLocal()
-    try:
-        assert count_events(db) == 1
-        event = db.query(Event).one()
-        assert event.payload == sample_event["payload"]
-    finally:
-        db.close()
+    assert count_events(db_session) == 1
+    event = db_session.query(Event).one()
+    assert event.payload == sample_event["payload"]

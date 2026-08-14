@@ -105,6 +105,19 @@ def client(app_engine):
 
 
 @pytest.fixture
+def db_session(app_engine):
+    # SessionLocal must be resolved after _reload_app_modules(); a module-level
+    # import binds an engine built before DATABASE_URL points at the container.
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@pytest.fixture
 def sample_event():
     return {
         "idempotency_key": "order-8821-create",

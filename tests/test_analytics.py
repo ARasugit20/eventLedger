@@ -1,7 +1,6 @@
 import pytest
 from sqlalchemy import text
 
-from app.db import SessionLocal
 from app.worker import process_message
 
 
@@ -77,25 +76,21 @@ async def test_analytics_latency_and_daily_volume(client, sample_event):
 
 
 @pytest.mark.asyncio
-async def test_analytics_latency_excludes_invalid_processed_at(client):
-    db = SessionLocal()
-    try:
-        db.execute(
-            text(
-                """
-                INSERT INTO events (
-                    id, idempotency_key, event_type, payload, status,
-                    created_at, processed_at
-                ) VALUES (
-                    gen_random_uuid(), 'bad-latency-key', 'order.created', '{}', 'processed',
-                    NOW(), NOW() - INTERVAL '1 hour'
-                )
-                """
+async def test_analytics_latency_excludes_invalid_processed_at(client, db_session):
+    db_session.execute(
+        text(
+            """
+            INSERT INTO events (
+                id, idempotency_key, event_type, payload, status,
+                created_at, processed_at
+            ) VALUES (
+                gen_random_uuid(), 'bad-latency-key', 'order.created', '{}', 'processed',
+                NOW(), NOW() - INTERVAL '1 hour'
             )
+            """
         )
-        db.commit()
-    finally:
-        db.close()
+    )
+    db_session.commit()
 
     latency = await client.get("/analytics/latency")
     assert latency.status_code == 200

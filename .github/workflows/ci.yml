@@ -30,4 +30,4 @@ jobs:
         run: ruff check app tests analytics scripts
 
       - name: Run tests with coverage
-        run: pytest -v --tb=short --maxfail=1 --cov=app --cov-report=term-missing --cov-fail-under=75
+        run: pytest -v --tb=short --cov=app --cov-report=term-missing --cov-fail-under=75
