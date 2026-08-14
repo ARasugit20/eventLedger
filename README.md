@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/ARasugit20/eventLedger/actions/workflows/ci.yml/badge.svg)](https://github.com/ARasugit20/eventLedger/actions/workflows/ci.yml)
 
+CI: passing (Postgres-backed integration tests via testcontainers)
+
 **Idempotent event ingestion for order and claims workflows — duplicate-safe by design.**
 
 Clients send events with an `idempotency_key`. Retries return the same result. No double processing. Full audit trail: `received` → `processing` → `processed` | `failed`.
