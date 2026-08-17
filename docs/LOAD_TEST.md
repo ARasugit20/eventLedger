@@ -1,59 +1,47 @@
-# EventLedger — Load Testing Notes
+# EventLedger — Load Testing
+
+Run the measured benchmark script against a containerized stack:
+
+```bash
+chmod +x loadtest/run.sh
+./loadtest/run.sh
+```
+
+Raw command output is saved under `loadtest/output/` and summarized in [`loadtest/results.md`](results.md).
 
 ## Tools
 
-Use [hey](https://github.com/rakyll/hey) or [wrk](https://github.com/wg/wrk) against a running stack:
+- [wrk](https://github.com/wg/wrk) with [`loadtest/unique.lua`](unique.lua) for unique-key ingest
+- [hey](https://github.com/rakyll/hey) for duplicate-key concurrency and latency percentiles
+
+Both are invoked by `loadtest/run.sh`. Install locally via Homebrew if needed:
 
 ```bash
-docker compose up --build -d
-
-# Warm-up
-curl -s http://localhost:8000/health | jq
-
-# 10k requests, 50 concurrent workers, unique idempotency keys
-hey -n 10000 -c 50 -m POST \
-  -H "Content-Type: application/json" \
-  -d '{"idempotency_key":"load-{{.RequestNumber}}","event_type":"order.created","payload":{"sku":"X1","quantity":1}}' \
-  http://localhost:8000/events
+brew install wrk hey jq
 ```
 
-For wrk, use a Lua script to generate unique `idempotency_key` values per request.
+## What the script measures
 
-## Baseline expectations (local Docker, M-series Mac / 4 vCPU CI runner)
+1. Starts `postgres`, `redis`, `api`, and `worker` via Docker Compose
+2. Waits for `/health`
+3. Runs a warm-up ingest
+4. 60s unique-key ingest at 50 connections (`wrk`)
+5. 60s duplicate-key phase at 50 concurrency (`hey`)
+6. Queries `/analytics/duplicate-rate` for the run-specific event type
+7. Generates `loadtest/results.md` from raw output (do not hand-edit benchmark numbers)
 
-| Traffic | Approx RPS | p99 ingest latency | First symptom |
-|---------|------------|--------------------|---------------|
-| 1×      | ~200–400   | < 50 ms            | — |
-| 10×     | ~800–1500  | 100–300 ms         | Connection pool wait, Redis CPU |
+## Evidence sources
 
-Numbers vary by hardware; treat these as order-of-magnitude guides.
+- API responses and `/analytics/*` SQL views
+- Container logs during the run
+- Prometheus scrapes **only** `api:8000`; worker counters are not scraped in the default Compose stack
 
-## First bottleneck at 10×
+## First bottleneck at 10× (design note)
 
-**PostgreSQL connection contention** on POST /events is typically the first wall:
+**PostgreSQL connection contention** on POST `/events` is typically the first wall under sustained concurrency:
 
 - Each request: Redis NX → INSERT → XADD stream → commit
 - Default SQLAlchemy pool (5 + 10 overflow) saturates under sustained 50+ concurrent clients
-- Symptom: rising `latency_ms` in API logs while CPU is still moderate
+- Symptom: rising ingest latency while CPU is still moderate
 
-**Second:** Redis SET NX at ingest — single-threaded Redis hits high CPU before Postgres maxes disk I/O on this workload.
-
-**Third:** Worker lag — stream depth grows if workers < ingest rate; GET /events?status=received backlog increases.
-
-## Mitigations (production roadmap)
-
-- PgBouncer or raise pool size with monitoring
-- Redis Cluster or dedicated dedupe shard
-- Multiple worker replicas in the same consumer group
-- Rate limiting / backpressure at the API gateway
-
-## Duplicate-key load (idempotency path)
-
-```bash
-hey -n 5000 -c 50 -m POST \
-  -H "Content-Type: application/json" \
-  -d '{"idempotency_key":"same-key-1","event_type":"order.created","payload":{"sku":"X1"}}' \
-  http://localhost:8000/events
-```
-
-Expect mostly **200** responses after the first **201**; Redis dedupe reduces duplicate INSERT pressure.
+See measured numbers in `loadtest/results.md` for this environment.

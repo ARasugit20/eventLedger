@@ -15,6 +15,7 @@ USE_EXTERNAL = os.environ.get("USE_EXTERNAL_SERVICES") == "1"
 _APP_MODULES = (
     "app.config",
     "app.db",
+    "app.dlq",
     "app.services.idempotency",
     "app.services.events",
     "app.worker",
@@ -89,6 +90,7 @@ def clean_state(app_engine, redis_url):
 
     _reload_app_modules()
     with app_engine.connect() as conn:
+        conn.execute(text("TRUNCATE TABLE dead_letter_events RESTART IDENTITY CASCADE"))
         conn.execute(text("TRUNCATE TABLE ingest_attempts RESTART IDENTITY CASCADE"))
         conn.execute(text("TRUNCATE TABLE events RESTART IDENTITY CASCADE"))
         conn.commit()

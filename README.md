@@ -63,8 +63,11 @@ Open Grafana → **EventLedger Overview** for ingest rate, worker latency, and p
 | `GET /analytics/duplicate-rate` | Which event types see the most retries? |
 | `GET /analytics/latency` | p50/p95/p99 processing time by type? |
 | `GET /analytics/daily-volume` | Daily ingest volume and failure rate? |
+| `GET /analytics/dlq` | Durable dead-letter count and oldest-item age? |
 
 Duplicate HTTP retries log to `ingest_attempts`; `events` keeps one row per `idempotency_key`.
+
+Small-scale Airflow DAG for scheduled DLQ health sweeps. Ingestion and worker processing remain application-managed and are not orchestrated by Airflow. See [`orchestration/dag.py`](orchestration/dag.py) and [`orchestration/run_once.sh`](orchestration/run_once.sh).
 
 ---
 
@@ -131,7 +134,7 @@ docs/          Interview notes, load test, contributions
 
 - [Operations guide](docs/OPERATIONS.md) — retry/DLQ, correlation IDs, alerts
 - [Interview talking points](docs/INTERVIEW.md) — idempotency, at-least-once, failure modes
-- [Load testing](docs/LOAD_TEST.md) — `hey` / `wrk` commands
+- [Load testing](docs/LOAD_TEST.md) — `./loadtest/run.sh` and measured [`loadtest/results.md`](loadtest/results.md)
 - [Contributions & GitHub graph](docs/CONTRIBUTIONS.md) — email, timestamps, green squares
 
 ---

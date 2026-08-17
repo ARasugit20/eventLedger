@@ -1,0 +1,10 @@
+[
+  {
+    "event_type": "loadtest.load-20260817T071003Z",
+    "total_attempts": 29542,
+    "duplicate_attempts": 18168,
+    "new_attempts": 11374,
+    "unique_idempotency_keys": 11374,
+    "duplicate_rate_pct": 61.5
+  }
+]

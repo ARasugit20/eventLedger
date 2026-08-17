@@ -12,9 +12,9 @@ from uuid import UUID
 
 from app.config import settings
 from app.db import SessionLocal
+from app.dlq import get_delivery_count, move_to_dlq, should_move_to_dlq
 from app.exceptions import TransientProcessingError
 from app.metrics import (
-    dlq_messages_total,
     event_processing_duration_seconds,
     stream_pending_messages,
     worker_processing_failures_total,
@@ -59,42 +59,6 @@ def refresh_stream_pending_gauge() -> None:
         stream_pending_messages.set(pending["pending"])
     except Exception:
         stream_pending_messages.set(0)
-
-
-def get_delivery_count(message_id: str) -> int:
-    client = get_redis()
-    entries = client.xpending_range(
-        settings.event_stream,
-        settings.consumer_group,
-        message_id,
-        message_id,
-        1,
-    )
-    if not entries:
-        return 1
-    entry = entries[0]
-    return int(entry.get("times_delivered", entry.get("delivery_count", 1)))
-
-
-def move_to_dlq(message_id: str, fields: dict[str, str], reason: str) -> None:
-    client = get_redis()
-    client.xadd(
-        settings.dlq_stream,
-        {
-            "source_message_id": message_id,
-            "event_id": fields.get("event_id", ""),
-            "correlation_id": fields.get("correlation_id", ""),
-            "reason": reason,
-        },
-    )
-    dlq_messages_total.inc()
-    logger.error(
-        '{"message_id":"%s","event_id":"%s","correlation_id":"%s","status":"dlq","reason":"%s"}',
-        message_id,
-        fields.get("event_id", ""),
-        fields.get("correlation_id", ""),
-        reason,
-    )
 
 
 def process_message(event_id: str, *, correlation_id: str = "") -> bool:
@@ -177,8 +141,18 @@ def handle_stream_message(message_id: str, fields: dict[str, str]) -> None:
             correlation_id,
             delivery_count,
         )
-        if delivery_count >= settings.max_delivery_attempts:
-            move_to_dlq(message_id, fields, str(exc))
+        if should_move_to_dlq(delivery_count):
+            db = SessionLocal()
+            try:
+                move_to_dlq(
+                    db,
+                    message_id=message_id,
+                    fields=fields,
+                    reason=str(exc),
+                    delivery_count=delivery_count,
+                )
+            finally:
+                db.close()
             client.xack(settings.event_stream, settings.consumer_group, message_id)
     except Exception:
         worker_processing_failures_total.inc()

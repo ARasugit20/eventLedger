@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.dlq import get_dlq_stats
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -76,3 +77,9 @@ def daily_volume(db: Session = Depends(get_db)):
         )
     ).all()
     return [_row_to_dict(r) for r in rows]
+
+
+@router.get("/dlq")
+def dlq_health(db: Session = Depends(get_db)):
+    """Durable dead-letter queue count and oldest-item age in seconds."""
+    return get_dlq_stats(db)

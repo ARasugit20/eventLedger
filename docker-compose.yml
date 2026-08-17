@@ -79,5 +79,20 @@ services:
       prometheus:
         condition: service_started
 
+  airflow:
+    profiles: [orchestration]
+    build:
+      context: .
+      dockerfile: orchestration/Dockerfile.airflow
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      EVENTLEDGER_API_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_started
+    entrypoint: /bin/bash
+    command: ["-c", "airflow db migrate && exec airflow standalone"]
+
 volumes:
   postgres_data:

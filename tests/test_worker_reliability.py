@@ -64,8 +64,9 @@ async def test_transient_failure_retries_without_ack(client):
 
 @pytest.mark.asyncio
 async def test_transient_failure_moves_to_dlq_after_max_attempts(client, monkeypatch):
+    """DLQ durability and idempotency are covered in tests/test_dlq.py."""
     ensure_consumer_group()
-    monkeypatch.setattr("app.worker.settings.max_delivery_attempts", 2)
+    monkeypatch.setattr("app.config.settings.max_delivery_attempts", 2)
 
     body = {
         "idempotency_key": "retry-key-dlq",
@@ -86,11 +87,12 @@ async def test_transient_failure_moves_to_dlq_after_max_attempts(client, monkeyp
 
     handle_stream_message(message_id, fields)
 
-    dlq_messages = get_redis().xread({settings.dlq_stream: "0"}, count=10)
-    dlq_event_ids = [
-        f.get("event_id") for _stream, entries in dlq_messages for _msg_id, f in entries
-    ]
-    assert event_id in dlq_event_ids
+    dlq = await client.get("/analytics/dlq")
+    assert dlq.status_code == 200
+    assert dlq.json()["count"] == 1
+
+    get_resp = await client.get(f"/events/{event_id}")
+    assert get_resp.json()["status"] == "failed"
 
 
 @pytest.mark.asyncio

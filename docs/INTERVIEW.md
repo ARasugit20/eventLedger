@@ -71,9 +71,11 @@ This proves Redis NX + Postgres UNIQUE + transaction handling is **race-safe** u
 | **Success** | Event marked `processed`, message ACKed |
 | **Permanent failure** (e.g. `.fail` types) | Event marked `failed`, message ACKed |
 | **Transient failure** (e.g. `.retry` types) | Claim released to `received`, message stays pending |
-| **Max redeliveries exceeded** | Message moved to DLQ stream, then ACKed |
+| **Max redeliveries exceeded** | Durable Postgres DLQ row + terminal event update commit, Redis mirror written, then message ACKed |
 
-Stale pending messages are reclaimed with `XAUTOCLAIM` so crashed workers don't strand work. DLQ replay is manual — inspect `eventledger:stream:dlq` and re-ingest if appropriate.
+Stale pending messages are reclaimed with `XAUTOCLAIM` so crashed workers don't strand
+work. Postgres is the DLQ source of truth; `eventledger:stream:dlq` is the operational
+mirror. Replay is manual after inspecting the durable row.
 
 **Interview line:** "We guarantee idempotent side effects, not exactly-once delivery. The DLQ catches poison pills after bounded retries."
 
