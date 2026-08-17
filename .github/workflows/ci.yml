@@ -31,3 +31,21 @@ jobs:
 
       - name: Run tests with coverage
         run: pytest -v --tb=short --cov=app --cov-report=term-missing --cov-fail-under=75
+
+  lineage-guard-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run reusable lineage guard action (offline report)
+        uses: ARasugit20/Model-Lineage-Guard/.github/actions/lineage-guard-gate@main
+        with:
+          mode: offline
+          output-dir: out/mlguard
+
+      - name: Verify --fail-on high blocks with exit code 3
+        uses: ARasugit20/Model-Lineage-Guard/.github/actions/lineage-guard-gate@main
+        with:
+          mode: offline
+          output-dir: out/mlguard-gate
+          verify-gate: "true"
