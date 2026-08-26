@@ -54,6 +54,12 @@ Prometheus metrics at `GET /metrics`:
 | `worker_processing_failures_total` | Permanent failures |
 | `dlq_messages_total` | Messages mirrored to the Redis DLQ stream by the worker |
 
+The default Prometheus target is only `api:8000`. Because `prometheus_client`
+registries are process-local, the API ingest counter is live but worker-updated latency,
+retry, failure, stream-pending, and DLQ series are not collected by the default stack.
+The worker-oriented dashboard panels and alert rules require a worker metrics endpoint
+and scrape target (or an equivalent multiprocess/export strategy).
+
 Example alert rules: [`deploy/prometheus/alerts.yml`](../deploy/prometheus/alerts.yml)
 
 ## Verification commands

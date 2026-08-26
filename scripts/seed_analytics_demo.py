@@ -127,7 +127,10 @@ def main() -> int:
             resp = client.get(f"{base}{path}", timeout=5.0)
             print(f"{path} -> {resp.status_code}")
 
-    print("Seed complete. Open Grafana -> EventLedger Overview for ingest/latency/pending panels.")
+    print(
+        "Seed complete. Grafana shows API ingest metrics; worker panels require "
+        "a separate worker scrape target."
+    )
     return 0
 
 

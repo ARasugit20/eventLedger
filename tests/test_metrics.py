@@ -19,4 +19,5 @@ async def test_metrics_records_new_and_duplicate(client, sample_event):
 
     response = await client.get("/metrics/")
     body = response.text
-    assert 'result="new"' in body or 'result="duplicate"' in body
+    assert 'events_ingested_total{result="new"}' in body
+    assert 'events_ingested_total{result="duplicate"}' in body

@@ -1,6 +1,11 @@
 import asyncio
+from uuid import UUID
 
 import pytest
+
+import app.worker as worker
+from app.models import Event
+from app.services.events import count_events
 
 
 @pytest.mark.asyncio
@@ -15,6 +20,40 @@ async def test_duplicate_idempotency_key_returns_same_id(client, sample_event):
 
     assert first_body["id"] == second_body["id"]
     assert first_body["idempotency_key"] == second_body["idempotency_key"]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_ingest_runs_handler_once(
+    client, db_session, sample_event, monkeypatch
+):
+    """Two API deliveries share one event, and the worker handler runs once."""
+    calls = 0
+    original_simulate_processing = worker.simulate_processing
+
+    def counted_processing(event):
+        nonlocal calls
+        calls += 1
+        return original_simulate_processing(event)
+
+    monkeypatch.setattr(worker, "simulate_processing", counted_processing)
+
+    first = await client.post("/events", json=sample_event)
+    second = await client.post("/events", json=sample_event)
+
+    assert first.status_code == 201
+    assert second.status_code == 200
+    assert first.json()["id"] == second.json()["id"]
+    assert count_events(db_session) == 1
+
+    event_id = first.json()["id"]
+    assert worker.process_message(event_id) is True
+    assert worker.process_message(event_id) is False
+    assert calls == 1
+
+    db_session.expire_all()
+    event = db_session.get(Event, UUID(event_id))
+    assert event is not None
+    assert event.status.value == "processed"
 
 
 @pytest.mark.asyncio

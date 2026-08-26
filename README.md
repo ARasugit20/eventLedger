@@ -4,58 +4,108 @@
 
 CI: passing (Postgres-backed integration tests via testcontainers)
 
-**Idempotent event ingestion for order and claims workflows — duplicate-safe by design.**
+**Idempotent event ingestion for retry-heavy order, claims, and webhook workflows.**
 
-Clients send events with an `idempotency_key`. Retries return the same result. No double processing. Full audit trail: `received` → `processing` → `processed` | `failed`.
+EventLedger prevents a retried request from creating a second durable event or running
+the handler again. The API combines:
+
+1. a PostgreSQL lookup for an already-committed idempotency key;
+2. Redis `SET NX` to coordinate requests that are concurrently in flight;
+3. `UNIQUE(idempotency_key)` in PostgreSQL as the durable race arbiter; and
+4. an atomic worker claim (`received → processing`) so only one worker owns an event.
 
 **Repo:** [github.com/ARasugit20/eventLedger](https://github.com/ARasugit20/eventLedger) · **API docs:** http://localhost:8000/docs
 
----
+## What happens when the same event arrives twice?
 
-## 30-second pitch
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API
+    participant Redis
+    participant Postgres
+    participant Stream
+    participant Worker
 
-EventLedger is a production-style event ingestion API: FastAPI + PostgreSQL + Redis + async worker. It solves the classic distributed-systems problem — **at-least-once delivery causing duplicate side effects** — with layered idempotency (Redis SET NX + Postgres UNIQUE + worker status guards). Observability and SQL analytics are built in.
+    Client->>API: POST event key=order-8821
+    API->>Postgres: Look up idempotency key
+    API->>Redis: SET NX in-flight claim
+    API->>Postgres: INSERT event (UNIQUE key)
+    API->>Stream: XADD event ID
+    API-->>Client: 201 + event ID
+    Client->>API: Retry same key and payload
+    API->>Postgres: Existing row found
+    API-->>Client: 200 + same event ID
+    Stream->>Worker: Deliver event ID
+    Worker->>Postgres: Atomic received-to-processing claim
+    Worker->>Postgres: Mark processed
+```
 
-## 60-second quickstart
+- The first request commits one row, queues one event ID, and returns **201**.
+- A sequential duplicate finds that row and returns **200** with the same UUID; it is
+  not queued again.
+- Concurrent duplicates are narrowed by Redis, but PostgreSQL uniqueness is the final
+  authority if requests still race.
+- Reusing the same key with a different event type or payload returns **409**.
+
+The guarantee is **at-least-once stream delivery with guarded handler execution**, not
+exactly-once delivery across arbitrary external systems.
+
+## One-command proof
+
+From the repository root:
 
 ```bash
-git clone https://github.com/ARasugit20/eventLedger.git
-cd eventLedger
-docker compose up --build
+./scripts/demo_idempotency.sh
 ```
+
+The script starts Docker Compose, waits for health, sends the same event twice, proves
+`201 → 200` with one UUID, waits for `processed`, prints duplicate analytics and
+Prometheus ingest counters, and shows the correlated API/worker logs.
+
+## Failure modes
+
+| Failure | Current behavior | Boundary / missing protection |
+|---------|------------------|-------------------------------|
+| Redis is unavailable | A retry for an already-committed key can resolve from PostgreSQL. A new event currently fails during the Redis claim. | Ingest does **not** fail open to PostgreSQL today. |
+| PostgreSQL commits but Redis `XADD` keeps failing | The API logs after three enqueue attempts; the event remains `received`. | There is no transactional outbox or automatic scanner to enqueue the stranded row. |
+| Worker dies before claiming | The message remains in the Redis pending-entry list and can be reclaimed with `XAUTOCLAIM`. | Recovery begins only after `PENDING_IDLE_MS`. |
+| Worker dies after committing `processing` | A later delivery cannot acquire the `received → processing` claim. | There is no processing lease/watchdog; the row can remain stuck in `processing`. |
+| Two workers race for one event | PostgreSQL's conditional update allows one claim; the loser performs no handler work. | This protects the current handler path, but cannot make external side effects exactly-once by itself. |
+
+See [docs/OPERATIONS.md](docs/OPERATIONS.md) for retries, durable DLQ behavior, and
+manual recovery notes.
+
+## Evidence in the repository
+
+- [`tests/test_concurrency.py`](tests/test_concurrency.py): 50 concurrent requests,
+  exactly one `201`, 49 `200`s, one UUID, and one database row.
+- [`tests/test_idempotency.py`](tests/test_idempotency.py): sequential duplicate and
+  single-processing guard coverage.
+- [`alembic/versions/002_dead_letter_events.py`](alembic/versions/002_dead_letter_events.py):
+  durable poison-message records after bounded retries.
+- [`loadtest/results.md`](loadtest/results.md): measured local container benchmark,
+  generated from the committed raw output.
+
+## Observability: implemented scope
+
+The Compose stack includes Prometheus, Grafana provisioning, and the exported
+[`EventLedger Overview`](deploy/grafana/dashboards/eventledger.json) dashboard.
 
 | Service | URL |
 |---------|-----|
 | API + OpenAPI | http://localhost:8000/docs |
-| Metrics | http://localhost:8000/metrics |
+| API metrics | http://localhost:8000/metrics |
 | Prometheus | http://localhost:9090 |
 | Grafana | http://localhost:3000 (admin/admin) |
 
-## Run this now
+The default [Prometheus configuration](deploy/prometheus.yml) scrapes only
+`api:8000`. API-process ingest counters are live. Worker latency, retry, stream-pending,
+failure, and DLQ metrics are instrumented in the worker process but are **not scraped**
+by the default stack, so the corresponding dashboard panels and alerts will not
+receive worker samples yet.
 
-```bash
-# Ingest + duplicate retry (201 then 200)
-curl -s -X POST http://localhost:8000/events \
-  -H "Content-Type: application/json" \
-  -d '{"idempotency_key":"demo-001","event_type":"order.created","payload":{"sku":"X1"}}' | jq
-
-curl -s -X POST http://localhost:8000/events \
-  -H "Content-Type: application/json" \
-  -d '{"idempotency_key":"demo-001","event_type":"order.created","payload":{"sku":"X1"}}' | jq
-
-# Seed analytics demo data (orders, claims, duplicates)
-make seed-analytics-demo
-
-# Business KPIs
-curl -s http://localhost:8000/analytics/health | jq
-curl -s http://localhost:8000/analytics/duplicate-rate | jq
-```
-
-Open Grafana → **EventLedger Overview** for ingest rate, worker latency, and pending queue.
-
----
-
-## Business questions answered
+## Analytics
 
 | Endpoint | Question |
 |----------|----------|
@@ -65,48 +115,27 @@ Open Grafana → **EventLedger Overview** for ingest rate, worker latency, and p
 | `GET /analytics/daily-volume` | Daily ingest volume and failure rate? |
 | `GET /analytics/dlq` | Durable dead-letter count and oldest-item age? |
 
-Duplicate HTTP retries log to `ingest_attempts`; `events` keeps one row per `idempotency_key`.
+Duplicate HTTP attempts are append-only in `ingest_attempts`; `events` keeps one row
+per idempotency key. The optional Airflow profile performs scheduled DLQ health sweeps;
+ingestion and worker processing remain application-managed.
 
-Small-scale Airflow DAG for scheduled DLQ health sweeps. Ingestion and worker processing remain application-managed and are not orchestrated by Airflow. See [`orchestration/dag.py`](orchestration/dag.py) and [`orchestration/run_once.sh`](orchestration/run_once.sh).
+## What I'd build next
 
----
-
-## How idempotency works
-
-| Layer | Mechanism | Role |
-|-------|-----------|------|
-| Fast path | Redis `SET NX` | Reject obvious duplicates in ~1 ms |
-| Durable | Postgres `UNIQUE(idempotency_key)` | Source of truth under races |
-| Worker | Atomic `received → processing` claim | No double side effects on redelivery |
-| API | Payload fingerprint match | Same key + different body → **409** |
-
-Duplicate POST with same body → **200** (same event id). New key → **201**.
-
-```mermaid
-flowchart LR
-    Client --> FastAPI
-    FastAPI --> RedisDedupe["Redis SET NX"]
-    FastAPI --> PostgreSQL
-    FastAPI --> RedisStream["Redis Stream"]
-    RedisStream --> Worker
-    Worker --> PostgreSQL
-```
-
-## Delivery guarantees
-
-> **At-least-once stream delivery** with **at-most-once side effects** via idempotency keys and worker status guards. Not exactly-once end-to-end.
-
-See [docs/OPERATIONS.md](docs/OPERATIONS.md) for retry/DLQ behavior, correlation IDs, metrics, and failure modes.
-
----
+- Add a transactional outbox so a committed event cannot be lost between PostgreSQL
+  and Redis Streams.
+- Replace permanent `processing` claims with leases plus a recovery sweep.
+- Add bounded queue depth, producer backpressure, and explicit rate limits.
+- Export and scrape worker-process metrics instead of presenting unsampled panels.
+- Require downstream idempotency keys or transactional sinks; document why
+  “exactly-once” is a system-wide tradeoff, not a queue setting.
 
 ## Verify locally
 
 ```bash
 pip install -r requirements.txt
-make test-cov          # pytest + 75% coverage gate
+make test-cov
 ruff check app tests analytics scripts
-make demo              # end-to-end seed + analytics (stack must be running)
+docker compose config
 ```
 
 ---

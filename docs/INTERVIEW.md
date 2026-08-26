@@ -16,10 +16,13 @@ Five questions you should be able to answer in a backend interview.
 
 | Layer | Role |
 |-------|------|
-| **Redis SET NX** | Fast path (~1 ms). Rejects obvious duplicates before a DB round-trip. |
+| **Redis SET NX** | Coordinates idempotency keys whose requests are concurrently in flight. |
 | **PostgreSQL UNIQUE** | Durable source of truth. Survives Redis TTL expiry and concurrent races. |
 
-Redis is an optimization. If Redis says "duplicate" but Postgres has no row yet (in-flight request), the UNIQUE constraint still picks a winner. If Redis forgets a key after 24h TTL but Postgres still has the row, a retry still returns 200 with the original event.
+The current API checks PostgreSQL first for an already-committed key, then uses Redis
+before attempting a new insert. If Redis reports an in-flight duplicate but PostgreSQL
+has no row yet, the unique constraint still picks the eventual winner. If Redis forgets
+a key after its TTL, PostgreSQL still returns the original durable event.
 
 ---
 
@@ -27,11 +30,16 @@ Redis is an optimization. If Redis says "duplicate" but Postgres has no row yet 
 
 **Answer:**
 
-- **During ingest:** New events can still be inserted into PostgreSQL (Redis claim is skipped or fails open to DB). Duplicates are caught by the UNIQUE constraint on `idempotency_key`. Ingest degrades but stays correct.
-- **Stream queue:** If Redis is down, `XADD` fails after retries — events stay in `received` status until Redis returns. The `events_pending_processing` gauge shows the backlog.
-- **Worker:** Cannot read the stream until Redis is back. Events pile up in Postgres with `status=received`.
+- **Existing key:** An already-committed duplicate is found in PostgreSQL before the
+  Redis claim and can still return the original event.
+- **New ingest:** The Redis `SET NX` exception currently propagates, so a new event
+  fails rather than falling open to PostgreSQL.
+- **After a database commit:** If `XADD` alone fails, enqueue is retried three times.
+  The row can remain `received`; there is no transactional outbox or recovery scanner.
+- **Worker:** It cannot consume or reclaim stream messages until Redis returns.
 
-**Interview line:** "Redis down hurts latency and async processing, but Postgres keeps dedupe correct."
+**Interview line:** "Postgres remains the durable dedupe authority, but Redis is
+currently required for new ingestion and queue delivery; fail-open ingest is future work."
 
 ---
 
@@ -45,7 +53,9 @@ Redis is an optimization. If Redis says "duplicate" but Postgres has no row yet 
 - **One** row in the database
 - All responses return the **same event UUID**
 
-This proves Redis NX + Postgres UNIQUE + transaction handling is **race-safe** under concurrent load — not just on sequential retries.
+This proves the **ingest path** is race-safe under concurrent retries. Separate worker
+tests prove a terminal event is not processed twice; the test does not claim
+exactly-once behavior for arbitrary downstream systems.
 
 ---
 
@@ -56,9 +66,12 @@ This proves Redis NX + Postgres UNIQUE + transaction handling is **race-safe** u
 1. **PostgreSQL writes** — each ingest is a transaction. Mitigate: connection pooling (PgBouncer), batch inserts, or write sharding by tenant.
 2. **Redis CPU** — single-threaded; SET NX on every request gets hot. Mitigate: Redis Cluster, or rely on Postgres with prepared statements.
 3. **Worker throughput** — one consumer group member is serial. Mitigate: multiple worker replicas in the same consumer group.
-4. **Observability** — use `events_ingested_total`, `event_processing_duration_seconds`, and `events_pending_processing` to find which layer saturates first before guessing.
+4. **Observability** — the default Prometheus target exposes API ingest metrics. Add a
+   worker metrics endpoint/scrape target before relying on processing latency, retry, or
+   stream-depth panels.
 
-**Interview line:** "I'd scale workers horizontally and pool DB connections first; Prometheus tells me where the wall actually is."
+**Interview line:** "I'd pool database connections and scale workers first, then expose
+worker metrics so measurements—not guesses—drive the next bottleneck fix."
 
 ---
 
