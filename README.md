@@ -18,7 +18,8 @@ the handler again. The API combines:
 4. an atomic worker claim (`received → processing`) so only one worker owns an event
    ([`app/services/events.py`](app/services/events.py), [`app/worker.py`](app/worker.py)).
 
-**Repo:** [github.com/ARasugit20/eventLedger](https://github.com/ARasugit20/eventLedger) · **API docs:** http://localhost:8000/docs
+**Repo:** [github.com/ARasugit20/eventLedger](https://github.com/ARasugit20/eventLedger) · **API docs:** http://localhost:8000/docs  
+**AWS companion:** [github.com/ARasugit20/eventledger-aws](https://github.com/ARasugit20/eventledger-aws) — same idempotency story on SQS + DynamoDB + Lambda
 
 ## What happens when the same event arrives twice?
 
