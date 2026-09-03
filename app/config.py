@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     idempotency_ttl_seconds: int = 86400
     max_delivery_attempts: int = 3
     pending_idle_ms: int = 60000
+    processing_lease_seconds: int = 300  # 5 minutes: if worker crashes, we retry after 5 min
+    api_ingest_bearer_token: str | None = None  # If set, POST /events requires this bearer token
 
 
 settings = Settings()

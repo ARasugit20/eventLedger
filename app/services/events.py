@@ -192,12 +192,15 @@ def list_events(
 
 
 def try_claim_for_processing(db: Session, event_id: UUID) -> Event | None:
-    """Atomically move received → processing; returns None if already claimed or terminal."""
+    """Atomically move received → processing and set lease; returns None if already claimed or terminal."""
+    lease_until = datetime.now(UTC).replace(microsecond=0) + __import__('datetime').timedelta(
+        seconds=settings.processing_lease_seconds
+    )
     stmt = (
         update(Event)
         .where(Event.id == event_id)
         .where(Event.status == EventStatus.received)
-        .values(status=EventStatus.processing)
+        .values(status=EventStatus.processing, processing_lease_until=lease_until)
         .returning(Event.id)
     )
     claimed_id = db.scalar(stmt)
@@ -262,3 +265,27 @@ def simulate_processing(event: Event) -> dict:
         "processed": True,
         "payload_hash": stable_payload_hash(event.payload),
     }
+
+
+def reset_expired_leases(db: Session) -> int:
+    """Reset any row stuck in 'processing' past its lease_until time back to 'received'.
+    
+    Called periodically by worker to handle crashes. If a worker dies after
+    received -> processing, this allows another worker to reclaim it.
+    
+    Returns the count of rows reset.
+    """
+    stmt = (
+        update(Event)
+        .where(Event.status == EventStatus.processing)
+        .where(Event.processing_lease_until < func.now())
+        .values(status=EventStatus.received, processing_lease_until=None)
+        .returning(Event.id)
+    )
+    result = db.execute(stmt)
+    db.commit()
+    count = len(result.scalars().all())
+    if count > 0:
+        logger.info("Reset %s expired processing leases back to received", count)
+        refresh_pending_gauge(db)
+    return count

@@ -3,12 +3,17 @@
 What: Reads event IDs from a Redis Stream, runs handlers, updates Postgres status.
 Why: Ingest API returns fast; heavy/slow work happens here asynchronously.
 Key function: process_message() — claim event, simulate handler, mark processed|failed.
+Metrics: Exposes Prometheus /metrics on a sidecar HTTP server (port 8001).
 """
 
 import logging
 import socket
+import threading
 import time
 from uuid import UUID
+
+from prometheus_client import make_asgi_app
+import uvicorn
 
 from app.config import settings
 from app.db import SessionLocal
@@ -27,6 +32,7 @@ from app.services.events import (
     mark_processed,
     refresh_pending_gauge,
     release_processing_claim,
+    reset_expired_leases,
     simulate_processing,
     try_claim_for_processing,
 )
@@ -40,6 +46,27 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 CONSUMER_NAME = f"worker-{socket.gethostname()}"
+METRICS_PORT = 8001
+
+
+def start_metrics_server():
+    """Start a minimal Prometheus metrics HTTP server in a background thread."""
+    app = make_asgi_app()
+    
+    def run_server():
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=METRICS_PORT,
+            log_level="error",
+            access_log=False,
+        )
+    
+    thread = threading.Thread(target=run_server, daemon=True)
+    thread.start()
+    logger.info("Metrics server started on port %s", METRICS_PORT)
+    time.sleep(0.5)  # Give server a moment to bind
+    return thread
 
 
 def ensure_consumer_group() -> None:
@@ -200,12 +227,17 @@ def reclaim_stale_messages(consumer_name: str = CONSUMER_NAME) -> int:
 
 
 def run_worker() -> None:
+    start_metrics_server()
     ensure_consumer_group()
     client = get_redis()
     logger.info("Worker %s listening on stream %s", CONSUMER_NAME, settings.event_stream)
 
     while True:
         try:
+            db = SessionLocal()
+            reset_expired_leases(db)
+            db.close()
+            
             reclaim_stale_messages()
             refresh_stream_pending_gauge()
 

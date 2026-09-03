@@ -29,7 +29,7 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo "Starting EventLedger..."
-"${COMPOSE[@]}" up --build -d
+"${COMPOSE[@]}" up -d
 
 echo "Waiting for API health..."
 healthy=0
@@ -65,6 +65,7 @@ post_event() {
     -X POST "${BASE_URL}/events" \
     -H "Content-Type: application/json" \
     -H "X-Correlation-ID: ${CORRELATION_ID}" \
+    ${EVENTLEDGER_INGEST_TOKEN:+-H "Authorization: Bearer ${EVENTLEDGER_INGEST_TOKEN}"} \
     -d "$payload"
 }
 

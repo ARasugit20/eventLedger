@@ -98,6 +98,26 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
+def check_ingest_token(request: Request) -> None:
+    """If API_INGEST_BEARER_TOKEN is set, require it in Authorization header."""
+    if not settings.api_ingest_bearer_token:
+        return  # No token required
+    
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid Authorization header",
+        )
+    
+    token = auth_header[7:]  # Remove "Bearer " prefix
+    if token != settings.api_ingest_bearer_token:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid bearer token",
+        )
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     from sqlalchemy import text
@@ -128,6 +148,7 @@ def ingest_event(
     request: Request,
     response: Response,
     db: Session = Depends(get_db),
+    _: None = Depends(check_ingest_token),
 ):
     start = time.perf_counter()
     correlation_id = getattr(request.state, "correlation_id", "")
