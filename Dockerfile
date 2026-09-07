@@ -18,4 +18,4 @@ RUN chmod +x deploy/start-api-worker.sh
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "deploy/start-api-worker.sh"]
