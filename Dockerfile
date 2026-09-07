@@ -13,6 +13,8 @@ COPY alembic.ini .
 COPY alembic/ alembic/
 COPY analytics/ analytics/
 COPY app/ app/
+COPY deploy/start-api-worker.sh deploy/start-api-worker.sh
+RUN chmod +x deploy/start-api-worker.sh
 
 ENV PYTHONUNBUFFERED=1
 

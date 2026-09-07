@@ -1,0 +1,13 @@
+# Railway API service — worker is a separate service (see deploy/railway-worker.toml).
+# Docs: https://docs.railway.com/guides/docker-compose
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "sh deploy/start-api-worker.sh"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

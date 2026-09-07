@@ -1,0 +1,12 @@
+# Duplicate this service in Railway: + New > GitHub repo > same branch,
+# then paste this start command under Settings > Deploy > Start Command.
+# Reference DATABASE_URL and REDIS_URL from managed Postgres + Redis services.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "sh -c 'until alembic upgrade head; do echo waiting-for-db; sleep 2; done && python -m app.worker'"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
