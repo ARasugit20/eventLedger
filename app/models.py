@@ -58,5 +58,5 @@ class Event(Base):
     processing_lease_until: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
-        comment="If status='processing' and this is in the past, worker crashed; reset to 'received'",
+        comment="If status='processing' and this is past, worker crashed; reset to 'received'",
     )

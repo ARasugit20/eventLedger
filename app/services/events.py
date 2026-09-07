@@ -192,7 +192,10 @@ def list_events(
 
 
 def try_claim_for_processing(db: Session, event_id: UUID) -> Event | None:
-    """Atomically move received → processing and set lease; returns None if already claimed or terminal."""
+    """Atomically move received → processing and set lease.
+
+    Returns None if the event is already claimed or terminal.
+    """
     lease_until = datetime.now(UTC).replace(microsecond=0) + __import__('datetime').timedelta(
         seconds=settings.processing_lease_seconds
     )

@@ -12,8 +12,8 @@ import threading
 import time
 from uuid import UUID
 
-from prometheus_client import make_asgi_app
 import uvicorn
+from prometheus_client import make_asgi_app
 
 from app.config import settings
 from app.db import SessionLocal
