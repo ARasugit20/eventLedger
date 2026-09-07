@@ -18,7 +18,8 @@ the handler again. The API combines:
 4. an atomic worker claim (`received → processing`) so only one worker owns an event
    ([`app/services/events.py`](app/services/events.py), [`app/worker.py`](app/worker.py)).
 
-**Repo:** [github.com/ARasugit20/eventLedger](https://github.com/ARasugit20/eventLedger) · **API docs:** http://localhost:8000/docs  
+**Live deploy:** [eventledger-production.up.railway.app](https://eventledger-production.up.railway.app) · [`/health`](https://eventledger-production.up.railway.app/health) · [`/docs`](https://eventledger-production.up.railway.app/docs)  
+**Repo:** [github.com/ARasugit20/eventLedger](https://github.com/ARasugit20/eventLedger)  
 **AWS companion:** [github.com/ARasugit20/eventledger-aws](https://github.com/ARasugit20/eventledger-aws) — same idempotency story on SQS + DynamoDB + Lambda
 
 ## What happens when the same event arrives twice?
@@ -90,7 +91,8 @@ manual recovery notes.
 | Sequential duplicate + single-processing guard | [`tests/test_idempotency.py`](tests/test_idempotency.py) |
 | Durable DLQ after bounded retries | [`app/dlq.py`](app/dlq.py), [`alembic/versions/002_dead_letter_events.py`](alembic/versions/002_dead_letter_events.py), [`tests/test_dlq.py`](tests/test_dlq.py) |
 | One-command duplicate demo | [`scripts/demo_idempotency.sh`](scripts/demo_idempotency.sh) |
-| Measured load benchmark | [`loadtest/results.md`](loadtest/results.md) |
+| Hosted 50-concurrent dedupe proof | [`docs/deploy_evidence/`](docs/deploy_evidence/) — 1 × `201`, 49 × `200`, one UUID against the live URL |
+| Measured local load benchmark | [`loadtest/results.md`](loadtest/results.md) — Colima containers, not the hosted deploy |
 | SQL analytics views | [`analytics/views.sql`](analytics/views.sql), [`app/routers/analytics.py`](app/routers/analytics.py) |
 | Scheduled DLQ health sweep | [`orchestration/dag.py`](orchestration/dag.py) |
 | CI with 75% coverage gate | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
@@ -244,6 +246,7 @@ loadtest/      Measured wrk/hey benchmark script and results
 
 ## Deep dive docs
 
+- [Deploy evidence](docs/deploy_evidence/) — live URL, public `/health` and `/docs`, hosted 50-concurrent dedupe run
 - [Operations guide](docs/OPERATIONS.md) — retry/DLQ, correlation IDs, alerts
 - [Interview talking points](docs/INTERVIEW.md) — idempotency, at-least-once, failure modes
 - [Load testing](docs/LOAD_TEST.md) — `./loadtest/run.sh` and measured [`loadtest/results.md`](loadtest/results.md)

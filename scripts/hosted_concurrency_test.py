@@ -55,13 +55,21 @@ async def _run(base_url: str, concurrency: int) -> dict:
     unique_ids = {b.get("id") for b in bodies}
     server_errors = [s for s in statuses if s >= 500]
 
+    # Identity fields must be byte-identical across all 50 responses. Lifecycle
+    # fields (status/result/processed_at) may differ because the worker can
+    # process the event while duplicates are still being answered.
+    identity_keys = ("id", "idempotency_key", "event_type", "payload")
+    identities = {
+        json.dumps({k: b.get(k) for k in identity_keys}, sort_keys=True) for b in bodies
+    }
+
     passed = (
         not server_errors
         and all(s in (200, 201) for s in statuses)
         and created == 1
         and duplicates == concurrency - 1
         and len(unique_ids) == 1
-        and len({json.dumps(b, sort_keys=True) for b in bodies}) == 1
+        and len(identities) == 1
     )
 
     return {
@@ -76,6 +84,8 @@ async def _run(base_url: str, concurrency: int) -> dict:
             "5xx": len(server_errors),
         },
         "unique_event_ids": len(unique_ids),
+        "unique_identity_bodies": len(identities),
+        "observed_lifecycle_statuses": sorted({b.get("status") for b in bodies if b.get("status")}),
         "event_id": next(iter(unique_ids)) if unique_ids else None,
         "health_status": health.status_code,
         "passed": passed,

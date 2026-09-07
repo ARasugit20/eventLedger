@@ -1,5 +1,12 @@
 # EventLedger — Load Testing
 
+> **Scope:** every number in [`loadtest/results.md`](../loadtest/results.md) was
+> measured against **local Colima containers on `http://localhost:8000`**, not the
+> hosted deploy. The `188.44` requests/second figure is a local benchmark only.
+> For hosted numbers see [`docs/deploy_evidence/`](deploy_evidence/), which records
+> a 50-request burst against the live Railway URL. The two are not comparable —
+> different concurrency, duration, and network path.
+
 Run the measured benchmark script against a containerized stack:
 
 ```bash

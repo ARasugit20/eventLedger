@@ -1,0 +1,21 @@
+{
+  "timestamp_utc": "20260907T161738Z",
+  "base_url": "https://eventledger-production.up.railway.app",
+  "concurrency": 50,
+  "elapsed_seconds": 0.456,
+  "requests_per_second": 109.71,
+  "status_counts": {
+    "201": 1,
+    "200": 49,
+    "5xx": 0
+  },
+  "unique_event_ids": 1,
+  "unique_identity_bodies": 1,
+  "observed_lifecycle_statuses": [
+    "processed",
+    "received"
+  ],
+  "event_id": "98ed30fc-7de9-4d4c-b1d6-1cad9ef81ad2",
+  "health_status": 200,
+  "passed": true
+}
